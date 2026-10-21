@@ -30,3 +30,20 @@
 *.exe
 *.out
 *.app
+
+# autotools
+config.log
+config.status
+autom4te.cache/
+
+dist/*
+
+Makefile
+linux/Makefile
+build/
+man/build
+
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md

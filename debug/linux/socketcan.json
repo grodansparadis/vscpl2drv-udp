@@ -1,0 +1,19 @@
+{
+  "debug" : true,
+  "write" : false,
+  "interface": "vcan0",
+  "flags": 0,
+  "key-file": "/etc/vscp/vscp.key",
+  "encryption" : "none",
+  "logging": {
+    "console-enable": true,
+    "console-level": "trace",
+    "console-pattern": "[vcpl2drv-socketcan %c] [%^%l%$] %v",
+    "file-enable": true,
+    "file-log-level": "debug",
+    "file-log-path" : "/tmp/vscpl2-socketcan.log",
+    "file-log-pattern": "[vcpl2drv-socketcan %c] [%^%l%$] %v",
+    "file-log-max-size": 50000,
+    "file-log-max-files": 7
+  }
+}
