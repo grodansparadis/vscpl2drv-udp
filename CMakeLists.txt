@@ -71,8 +71,6 @@ if(NOT DEFINED WIN32)
     add_subdirectory(man)
 endif()
 
-option(USE_SSL "Use SSL" TRUE)
-
 ## --- C++11 build flags ---
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -147,6 +145,7 @@ find_package(Threads REQUIRED)
 
 #openssl
 find_package(OpenSSL REQUIRED)
+find_package(EXPAT REQUIRED)
 
 
 include(FetchContent)
@@ -205,7 +204,7 @@ set(RESOURCE_FILES
         forms/index.html)
 
 # Add files to library
-add_library(vscpl2drv-socketcan
+add_library(vscpl2drv-udp
   ${CMAKE_SOURCE_DIR}/src/vscpl2drv-udp.h
   ${CMAKE_SOURCE_DIR}/src/vscpl2drv-udp.cpp
   ${CMAKE_SOURCE_DIR}/src/udp.h
@@ -214,10 +213,12 @@ add_library(vscpl2drv-socketcan
   ${vscp_SOURCE_DIR}/src/vscp/common/guid.cpp
   ${vscp_SOURCE_DIR}/src/vscp/common/vscphelper.h
   ${vscp_SOURCE_DIR}/src/vscp/common/vscphelper.cpp
-  ${vscp_SOURCE_DIR}/src/vscp/common/vscp-client-base.h
-  ${vscp_SOURCE_DIR}/src/vscp/common/vscp-client-base.cpp
-  ${vscp_SOURCE_DIR}/src/vscp/common/vscp-client-udp.h
-  ${vscp_SOURCE_DIR}/src/vscp/common/vscp-client-udp.cpp
+  ${vscp_SOURCE_DIR}/src/common/crc.c
+  ${vscp_SOURCE_DIR}/src/common/crc8.c
+  ${vscp_SOURCE_DIR}/src/common/vscp-aes.c
+  ${vscp_SOURCE_DIR}/src/common/vscpbase64.c
+  ${vscp_SOURCE_DIR}/src/common/vscpmd5.c
+  ${vscp_SOURCE_DIR}/src/common/vscphelper-common.cpp
 ) 
 
 
@@ -233,23 +234,34 @@ include_directories( PUBLIC src/
   
 
 
-target_link_libraries(vscpl2drv-socketcan PRIVATE     
+target_link_libraries(vscpl2drv-udp PRIVATE
     m
     dl
     z
     Threads::Threads
     OpenSSL::SSL 
     OpenSSL::Crypto
-    spdlog
+    EXPAT::EXPAT
+    spdlog::spdlog_header_only
     nlohmann_json)
+
+if(UNIX AND NOT APPLE)
+  set_property(TARGET vscpl2drv-udp APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--no-undefined")
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(udp-test src/test.cpp)
+  target_link_libraries(udp-test PRIVATE vscpl2drv-udp OpenSSL::Crypto Threads::Threads nlohmann_json)
+  add_test(NAME udp-loopback COMMAND udp-test)
+endif()
 
 
 # Install
 
-install(TARGETS vscpl2drv-socketcan
+install(TARGETS vscpl2drv-udp
           LIBRARY DESTINATION ${CMAKE_INSTALL_FULL_}${VSCP_LEVEL2_DRV_DIR}
           RUNTIME DESTINATION ${CMAKE_INSTALL_MANDIR}            
           RESOURCE DESTINATION ${CMAKE_INSTALL_FULL_}/var/lib/vscp/vscpd) 
-install(FILES ${CMAKE_SOURCE_DIR}/resources/linux/socketcan.json
-          DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/vscpl2drv-socketcan/")      
-
+install(FILES ${CMAKE_SOURCE_DIR}/resources/linux/udp.json
+          DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/vscpl2drv-udp/")

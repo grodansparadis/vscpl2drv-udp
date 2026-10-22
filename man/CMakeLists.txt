@@ -23,18 +23,14 @@ endif()
 
 # man pages
 if (${PANDOCCOMMAND_FOUND})
-    ADD_CUSTOM_TARGET(man ALL)
-
-    ADD_CUSTOM_COMMAND(
-        TARGET man
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/vscpl2drv-socketcan.1.md
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMAND pandoc -s -t man ${CMAKE_CURRENT_SOURCE_DIR}/vscpl2drv-socketcan.1.md -o ${CMAKE_CURRENT_BINARY_DIR}/vscpl2drv-socketcan.1
-        OUTPUTS ${CMAKE_CURRENT_BINARY_DIR}/vscpl2drv-socketcan.1
-)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/vscpl2drv-udp.1
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/vscpl2drv-udp.1.md
+        COMMAND ${PANDOCCOMMAND_PATH} -s -t man
+                ${CMAKE_CURRENT_SOURCE_DIR}/vscpl2drv-udp.1.md
+                -o ${CMAKE_CURRENT_BINARY_DIR}/vscpl2drv-udp.1
+    )
+    add_custom_target(man ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/vscpl2drv-udp.1)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/vscpl2drv-udp.1
+            DESTINATION ${CMAKE_INSTALL_MANDIR}/man1/)
 endif()
-
-install(
-  FILES ${CMAKE_CURRENT_BINARY_DIR}/vscpl2drv-socketcan.1
-  DESTINATION ${CMAKE_INSTALL_MANDIR}/man1/
-)

@@ -2,7 +2,7 @@
     "runasuser" : "",
     "debug" : 0,		
     "guid" : "FF:FF:FF:FF:FF:FF:FF:F5:99:99:00:00:00:00:00:01",
-    "servername" : "socketcan VSCP daemon test",
+    "servername" : "UDP VSCP daemon test",
     "classtypedb" : "/var/lib/vscp/vscpd/vscp_events.sqlite3",
     "maindb" : "/var/lib/vscp/vscpd/vscp.sqlite3",
     "vscpkey" : "/var/vscp/vscp.key",
@@ -74,9 +74,9 @@
         "level2" : [
             {
                 "enable" : true,
-                "name" : "socketcan",
-                "path-driver" : "/home/akhe/development/VSCP/vscpl2drv-socketcan/build/libvscpl2drv-socketcan.so",
-                "path-config" : "/home/akhe/development/VSCP/vscpl2drv-socketcan/debug/linux/socketcan.json",
+                "name" : "udp",
+                "path-driver" : "/home/akhe/development/VSCP/vscpl2drv-udp/build/libvscpl2drv-udp.so",
+                "path-config" : "/home/akhe/development/VSCP/vscpl2drv-udp/resources/linux/udp.json",
                 "guid" : "FF:FF:FF:FF:FF:FF:FF:F5:33:33:00:00:00:00:00:00",
 
                 "mqtt": {

@@ -7,14 +7,14 @@
 VSCP UDP level II driver
 
 - **Available for:** Linux (Debian,Raspberry Pi 64-bit (ARM64) and 32-bit (ARMHF))
-- **Driver Linux**: libvscpl2_udpdrv.so
+- **Driver Linux**: libvscpl2drv-udp.so
 
-This driver interface SocketCAN, the official CAN API of the Linux kernel, has been included in the kernel for a long time now. Meanwhile, the official Linux repository has device drivers for all major CAN chipsets used in various architectures and bus types. SocketCAN offers the user a multiuser capable as well as hardware independent socket-based API for CAN based communication and configuration. Socketcan nowadays give access to the major CAN adapters that is available on the market. Note that as CAN only can handle Level I events only events up to class < 1024 can be sent to this device. Other events will be filtered out.
-
-The driver supports CAN FD but the way id's are mapped in VSCP over CAN the use of bigger data counts are not just meaningful as they only is available in VSCP level II and the space for vscp class and vscp type is limited.
+This driver can act as a UDP client, a UDP server or both (the default).
+It transports full Level II events using the [VSCP general binary protocol (VSCP-GBP)](https://grodansparadis.github.io/vscp-doc-spec/#/./vscp_over_binary).
+OpenSSL provides AES-128/192/256-CBC encryption and optional HMAC-SHA256 authentication.
 
 ## Install the driver
-You can find binary installation files [here](https://github.com/grodansparadis/vscpl2drv-socketcan/releases)
+You can find binary installation files [here](https://github.com/grodansparadis/vscpl2drv-udp/releases)
 
 You install the driver using the debian package with
 
@@ -28,7 +28,7 @@ You also need to set up the configuration file for the driver. If you don't need
 
 If you need to do dynamic configuration (**write** enabled) we recommend that you create the file in the _/var/lib/vscp/_ folder or any location you find to be convenient.
 
-A sample configuration file is available in _/usr/share/vscpl2drv-socketcan_ folder after installation. The sample configuration file is named socketcan.json. Copy this file to the folder you want it to be in (/etc/vscp) and edit it to suite your needs and the point tot the file from the driver setup in your master software (vscp-mqtt-daemon, vscp-tcpip-daemon or other.)
+A sample configuration file is available in _/usr/share/vscpl2drv-udp_ folder after installation. The sample configuration file is named udp.json. Copy this file to the folder you want it to be in (/etc/vscp) and edit it to suite your needs and the point tot the file from the driver setup in your master software (vscp-mqtt-daemon, vscp-tcpip-daemon or other.)
 
 
 ## How to build the driver
@@ -37,13 +37,13 @@ You need _build-essentials_ and _git_ installed on your system
 
 ```bash
 sudo apt update && sudo apt -y upgrade
-sudo apt install build-essential git
+sudo apt install build-essential git cmake libssl-dev libexpat1-dev
 ```
 
 To build this driver you to clone the driver source
 
 ```bash
-git clone --recurse-submodules -j8 https://github.com/grodansparadis/vscpl2drv-socketcan.git
+git clone --recurse-submodules -j8 https://github.com/grodansparadis/vscpl2drv-udp.git
 ```
 
 The build used **pandoc** for man-page generation so you want the man pages you should install it first with
@@ -52,16 +52,17 @@ The build used **pandoc** for man-page generation so you want the man pages you 
 sudo apt install pandoc
 ```
 
-If you skip it the build will give you some errors (which you can ignore if you don't care about the man page)
+If you skip it, the build will warn and omit the man page.
 
 Now go into the repository and build the driver
 
 ```
-cd vscpl2drv-socketcan
+cd vscpl2drv-udp
 mkdir build
 cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=/
 make
+ctest --output-on-failure
 sudo make install
 ```
 
@@ -85,9 +86,36 @@ to install to */usr/local/var/lib/vscp/drivers/level2*.
 
 ## Configuration
 
+#### VSCP tcp/ip daemon (vscp-tcpip-daemon) driver config
+
+```json
+{
+  "enable": true,
+  "name": "udp",
+  "path-driver": "/path/to/driver/libvscpl2drv-udp.so",
+  "path-config": "/etc/vscp/udp.json",
+  "guid": "FF:FF:FF:FF:FF:FF:FF:F5:02:00:00:00:00:00:00:03"
+}
+```
+
+##### enable
+Set enable to "true" if the driver should be loaded by the VSCP daemon.
+
+##### name
+This is the name of the driver. Used when referring to it in different interfaces.
+
+##### path-driver
+This is the path to the driver. If you install from a Debian package this will be */var/lib/vscp/drivers/level2/libvscpl2drv-udp.so*.
+
+##### path-config
+This is the path to the driver configuration file (see below). This file determines the functionality of the driver. A good place for this file is in _/etc/vscp/udp.json_ It should be readable only by the user the VSCP daemon is run under (normally _vscp_) as it holds credentials to log in to a remote VSCP tcp/ip link interface. Never make it writable at this location.
+
+##### guid
+All level II drivers must have a unique GUID. There is many ways to obtain this GUID, Read more [here](https://grodansparadis.gitbooks.io/the-vscp-specification/vscp_globally_unique_identifiers.html). The tool [vscp_eth_to_guid](https://grodansparadis.github.io/vscp/#/configuring_the_vscp_daemon?id=think-before-guid) is a useful tool that is shipped with the VSCP daemon that will get you a unique GUID if you are working on a machine with an Ethernet interface.
+
 #### VSCP MQTT daemon (vscp-mqtt-daemon) driver config
 
-The VSCP MQTT daemon configuration file is (normally) located at */etc/vscp/vscpd.json* (For the curious: [VSCP daemon full sample config file for Linux](https://github.com/grodansparadis/vscp/blob/master/resources/linux/vscpd.json)). To use the vscpl2drv-socketcan.so driver there must be an entry in the drivers level2 section
+The VSCP MQTT daemon configuration file is (normally) located at */etc/vscp/vscpd.json* (For the curious: [VSCP daemon full sample config file for Linux](https://github.com/grodansparadis/vscp/blob/master/resources/linux/vscpd.json)). To use the vscpl2drv-udp.so driver there must be an entry in the drivers level2 section
 
 ```json
 "drivers" : {
@@ -99,9 +127,9 @@ with the following format
 ```json
 {
   "enable" : true,
-  "name" : "socketcan",
-  "path-driver" : "/path/do/driver/libvscpl2drv-socketcan.so",
-  "path-config" : "/etc/vscp/socketcan.json",
+  "name" : "udp",
+  "path-driver" : "/path/do/driver/libvscpl2drv-udp.so",
+  "path-config" : "/etc/vscp/udp.json",
   "guid" : "FF:FF:FF:FF:FF:FF:FF:F5:33:33:00:00:00:00:00:00",
 
   "mqtt": {
@@ -181,10 +209,10 @@ Set enable to "true" if the driver should be loaded by the VSCP daemon.
 This is the name of the driver. Used when referring to it in different interfaces.
 
 ##### path-driver
-This is the path to the driver. If you install from a Debian package this will be */var/lib/vscp/drivers/level2/libvscpl2drv-socketcan.so*.
+This is the path to the driver. If you install from a Debian package this will be */var/lib/vscp/drivers/level2/libvscpl2drv-udp.so*.
 
 ##### path-config
-This is the path to the driver configuration file (see below). This file determines the functionality of the driver. A good place for this file is in _/etc/vscp/socketcan.json_ It should be readable only by the user the VSCP daemon is run under (normally _vscp_) as it holds credentials to log in to a remote VSCP tcp/ip link interface. Never make it writable at this location.
+This is the path to the driver configuration file (see below). This file determines the functionality of the driver. A good place for this file is in _/etc/vscp/udp.json_ It should be readable only by the user the VSCP daemon is run under (normally _vscp_) as it holds credentials to log in to a remote VSCP tcp/ip link interface. Never make it writable at this location.
 
 ##### guid
 All level II drivers must have a unique GUID. There is many ways to obtain this GUID, Read more [here](https://grodansparadis.gitbooks.io/the-vscp-specification/vscp_globally_unique_identifiers.html). The tool [vscp_eth_to_guid](https://grodansparadis.github.io/vscp/#/configuring_the_vscp_daemon?id=think-before-guid) is a useful tool that is shipped with the VSCP daemon that will get you a unique GUID if you are working on a machine with an Ethernet interface.
@@ -192,37 +220,13 @@ All level II drivers must have a unique GUID. There is many ways to obtain this 
 ##### mqtt
 See the [VSCP configuration documentation](https://grodansparadis.github.io/vscp/#/configuring_the_vscp_daemon?id=config-mqtt) for info about this section. It is common for all drivers.
 
-#### VSCP tcp/ip daemon (vscp-tcpip-daemon) driver config
 
-```json
-{
-  {
-    "enable": true,
-    "name": "socketcan",
-    "path-driver": "/path/to/driver/libvscpl2drv-socketcan.so",
-    "path-config": "/etc/vscp/socketcan.json",
-    "guid": "FF:FF:FF:FF:FF:FF:FF:F5:02:00:00:00:00:00:00:03"
-  }
-}
-
-##### enable
-Set enable to "true" if the driver should be loaded by the VSCP daemon.
-
-##### name
-This is the name of the driver. Used when referring to it in different interfaces.
-
-##### path-driver
-This is the path to the driver. If you install from a Debian package this will be */var/lib/vscp/drivers/level2/libvscpl2drv-socketcan.so*.
-
-##### path-config
-This is the path to the driver configuration file (see below). This file determines the functionality of the driver. A good place for this file is in _/etc/vscp/socketcan.json_ It should be readable only by the user the VSCP daemon is run under (normally _vscp_) as it holds credentials to log in to a remote VSCP tcp/ip link interface. Never make it writable at this location.
-
-##### guid
-All level II drivers must have a unique GUID. There is many ways to obtain this GUID, Read more [here](https://grodansparadis.gitbooks.io/the-vscp-specification/vscp_globally_unique_identifiers.html). The tool [vscp_eth_to_guid](https://grodansparadis.github.io/vscp/#/configuring_the_vscp_daemon?id=think-before-guid) is a useful tool that is shipped with the VSCP daemon that will get you a unique GUID if you are working on a machine with an Ethernet interface.
 
 ## Configuring the driver
 
-On start up the configuration is read from the path set in the driver configuration of the VSCP daemon, usually */etc/vscp/conf-file-name* and values are set from this location. If the **write** parameter is set to "true" the above location is a bad choice as the VSCP daemon will not be able to write to it. A better location is */var/lib/vscp/drivername/configure-name.json* or some other writable location.
+On startup the configuration is read from the path set in the driver
+configuration of the VSCP daemon, usually `/etc/vscp/udp.json`. The file should
+be readable by the driver user and protected against unauthorized modification.
 
 The configuration file have the following format
 
@@ -230,26 +234,27 @@ The configuration file have the following format
 {
   "debug" : true,
   "write" : false,
-  "interface": "vcan0",
+  "interface": "udp://255.255.255.255:9999",
   "flags": 0,
-  "key-file": "/var/vscp/vscp.key",
-  "encryption" : "none|aes128|aes192|aes256",
+  "key": "",
+  "hmac": "",
+  "encryption" : "none",
   "logging": {
     "console-enable": true,
     "console-level": "trace",
-    "console-pattern": "[vcpl2drv-socketcan %c] [%^%l%$] %v",
+    "console-pattern": "[vcpl2drv-udp %c] [%^%l%$] %v",
     "file-enable": true,
     "file-log-level": "debug",
-    "file-log-path" : "/var/log/vscp/vscpl1drv-socketcan.log",
-    "file-log-pattern": "[vcpl2drv-socketcan %c] [%^%l%$] %v",
+    "file-log-path" : "/var/log/vscp/vscpl2drv-udp.log",
+    "file-log-pattern": "[vcpl2drv-udp %c] [%^%l%$] %v",
     "file-log-max-size": 50000,
     "file-log-max-files": 7
   }, 
   "filter" : {
-    "in-filter" : "incoming filter on string form",
-    "in-mask" : "incoming mask on string form",
-    "out-filter" : "outgoing filter on string form",
-    "out-mask" : "outgoing mask on string form"
+    "in-filter" : "0,0,0,-",
+    "in-mask" : "0,0,0,-",
+    "out-filter" : "0,0,0,-",
+    "out-mask" : "0,0,0,-"
   }
 }
 ```
@@ -258,27 +263,85 @@ The configuration file have the following format
 Set debug to _true_ to get debug information written to the log file. This can be a valuable help if things does not behave as expected.
 
 ### write
-If write is true dynamic changes to the configuration file will be possible to save dynamically to disk. That is, settings you do at runtime can be saved and be persistent. The safest place for a configuration file is in the VSCP configuration folder */etc/vscp/* but for dynamic saves are not allowed if you don't run the VSCP daemon as root (which you should not). Next best place is to use the folder */var/lib/vscp/drivers/level2/configure.json*. A default configuration file is written to [/usr/share/vscp/drivers/level2/vscpl2drv-socketcan](/usr/share/vscp/drivers/level2/vscpl2drv-socketcan) when the driver is installed.
-
-If you never intend to change driver parameters during runtime consider moving the configuration file to the VSCP daemon configuration folder is a good choice.
+Reserved for runtime configuration support. Configuration is currently read only at
+startup; changing the JSON file requires closing and reopening the driver.
+The installed sample is `/usr/share/vscpl2drv-udp/udp.json`.
 
 ### guid
 All level II drivers must have a unique GUID. There is many ways to obtain this GUID, Read more [here](https://grodansparadis.gitbooks.io/the-vscp-specification/vscp_globally_unique_identifiers.html).
 
 ### Interface
 
-> interface  (For example can0/can1/can2... vacan0, vcan1, vcan2...)
-
-The parameter interface is the socketcan interface to use. Typically this is can0, can0, can1... Defaults is vcan0 the first virtual interface. If the variable prefix_interface is available it will be used instead of the configuration value.
+The destination URL, default `udp://255.255.255.255:9999`. IPv4, DNS names
+and bracketed IPv6 addresses such as `udp://[::1]:9999` are supported.
+The client sends to this address and port. The server listens on the wildcard
+address of the resolved family at the same port. Client-only sockets
+use an ephemeral source port. IPv4 broadcast is enabled; multicast group
+membership is not implemented. No CAN interface or remote variable is used.
+Only one server can bind a given local address/port.
 
 ### Flags
-This is configuration flags for the socketcan interface. Currently not used.
+This is configuration flags for the UDP interface.
 
-### key-file 
-Path to file with encryption key. Currently not used.
+| Bit | Description |
+| --- | ----------- |
+| 0 | If set disable UDP client functionality |
+| 1 | If set disable UDP server functionality |
+
+Thus `0` enables both directions, `1` receives only, `2` sends only and `3`
+disables both. Reads/writes in a disabled direction return
+`CANAL_ERROR_NOT_SUPPORTED`. Writes send synchronously and do not take ownership
+of the supplied event. The receive queue is bounded to 32,000 events.
+
+### key
+Path to a file containing exactly 16/24/32 hexadecimal-encoded bytes for
+AES-128/192/256 respectively (32/48/64 hex digits). Whitespace is allowed.
+Required when encryption is enabled; there is no default key.
+
+### hmac
+Path to a file containing a separate 32-byte HMAC-SHA256 key (64 hex digits).
+An absent or empty path disables HMAC. When defined, authenticated version-1
+packets are mandatory in both directions; unauthenticated packets are rejected.
+HMAC with `encryption: "none"` fails startup. Missing, malformed or incorrectly
+sized key files also fail startup. Keys are never logged.
 
 ### encryption
-Encryption used. Currently not used.
+Encryption used.
+
+| Value | Description |
+| ----- | ----------- |
+| none or empty | No encryption. |
+| aes128 | AES-128 encryption. |
+| aes192 | AES-192 encryption. |
+| aes256 | AES-256 encryption. |
+
+AES uses CBC mode, PKCS#7 padding and a fresh random 16-byte IV per packet.
+OpenSSL supports all required algorithms, so libsodium is not needed.
+Receivers enforce the configured encryption mode rather than trusting the
+received packet's encryption nibble.
+
+#### Wire format
+
+One binary event is carried per UDP datagram. Outgoing events use binary event
+format 1 (nanosecond timestamps); incoming event formats 0 and 1 are supported.
+The GUID, class, type and full event payload are preserved without CAN's
+eight-byte or Level I class restrictions.
+
+Without HMAC the legacy UDP layout is `[type][payload + CRC]`, or with AES,
+`[type][ciphertext][IV:16]`, with no stream prefix.
+
+With HMAC the layout is
+`[0x55][version:3 | length:13, big-endian][type][ciphertext][IV:16][tag:16]`.
+Version is 1 and length includes type, ciphertext, IV and tag, not the prefix.
+The tag is the leftmost 16 bytes of
+`HMAC-SHA256(prefix || type || ciphertext || IV)`. Authentication is checked
+in constant time before decryption; padding and the plaintext CRC are then
+validated. Packets with incorrect lengths, CRCs, tags or encryption settings
+are discarded and logged.
+
+AES without HMAC provides confidentiality only. UDP provides no delivery,
+ordering or replay guarantees, including when HMAC is enabled. Use application
+sequence numbers and acknowledgements where required.
 
 ### Logging
 
@@ -294,24 +357,24 @@ Logging level for console log. Set to one of "off | critical | error | warn | in
 The logging pattern for the console. The default is
 
 ```
-"[vcpl2drv-socketcan] [%^%l%$] %v"
+"[vcpl2drv-udp] [%^%l%$] %v"
 ```
 Patterns are described [here](https://spdlog.docsforge.com/v1.x/3.custom-formatting/#pattern-flags).
 
 #### file-enable 
-Set to _true_ to log to the console.
+Set to _true_ to log to a rotating file. Disabled by default.
 
 #### file-level
 Set to one of "off | critical | error | warn | info | debug | trace" to set log level.
 
-#### file-path" : "path to log file",
+#### file-path
 This is a writable path to a file that will get log information written to it. This can be a valuable to have if things does not behave as expected.
 
 #### file-pattern
 The logging pattern for the console. The default is
 
 ```
-"[vcpl2drv-socketcan] [%^%l%$] %v"
+"[vcpl2drv-udp] [%^%l%$] %v"
 ```
 Patterns are described [here](https://spdlog.docsforge.com/v1.x/3.custom-formatting/#pattern-flags).
 
@@ -320,6 +383,11 @@ Max size for log file before it will rotate and a new file is created. Default i
 
 #### file-max-files
 Max number of log files to keep. Default is 7
+
+The `file-log-level`, `file-log-path`, `file-log-pattern`, `file-log-max-size`
+and `file-log-max-files` names in the example are also accepted and take
+precedence over the corresponding `file-*` names. Console and rotating-file
+logging are supported; syslog and UDP logging are not implemented.
 
 
 ### Filter
@@ -373,74 +441,37 @@ Outgoing mask on string form. The string mask has the form _"mask-priority,
     mask-class, mask-type, mask-GUID”_.
 
 
-## Using the vscpl2drv-socketcan driver
+## Using the vscpl2drv-udp driver
 
-The easiest way to test the vscpl2drv-socketcan driver is to create a virtual CAN interface. You should first of all make sure that the necissary modules are loaded on your system. You do this with
+For a local loopback test, configure `interface` as `udp://127.0.0.1:9999`,
+`flags` as `0`, and open the driver through its Level II API. Events submitted
+with `VSCPWrite` can then be received with `VSCPRead`.
 
-```bash
-modprobe can
-modprobe can_raw
-modprobe can-bcm
-modprobe can-dev
-modprobe can-gw
-modprobe vcan
-```
+For two processes on the same host, set the sender's `flags` to `2` and the
+receiver's to `1`, both using the same destination port. For two hosts, use the
+remote host's address as the sender destination and allow the UDP port through
+the receiver's firewall.
 
-Then you should create the virtual CAN interface. You can do this with
+To enable authenticated AES-256, create independent keys in a private directory:
 
 ```bash
-sudo ip link add dev vcan0 type vcan
+umask 077
+openssl rand -hex 32 > vscp.key
+openssl rand -hex 32 > hmac.key
 ```
 
-or if you want a CAN FD interface
+Set `encryption` to `aes256` and set `key` and `hmac` to the absolute paths of
+these files. Both peers must use the same encryption and HMAC keys. For AES-128
+or AES-192 use `openssl rand -hex 16` or `openssl rand -hex 24` for the AES key;
+the HMAC key is always 32 bytes. Protect key files so only the driver user can
+read them.
+
+The automated loopback tests need no root privileges or CAN hardware:
 
 ```bash
-ip link add dev vcan0 type vcan
-ip link set vcan0 mtu 72
+cmake --build build --target udp-test
+ctest --test-dir build --output-on-failure
 ```
-
-Then you have to bring up the virtual interface
-
-```
-sudo ip link set up vcan0
-```
-
-You can use
-
-```bash
-ip link show
-```
-
-to display information about your interfaces.
-
-With 
-
-```
-candump vcan0
-```
-
-you can check CAN frames sent on this interface. 
-
-You can use [cansend]() to send frames to the interface
-
-```
-cansend vcan0 0000eb00#0011
-```
-
-or send random data with
-
-```
-cangen -e -f vcan0 -v vcan0
-```
-
-Remember that VSCP only use extended CAN frames (the **-e** switch). Here we also use the **-f** switch to enable CAN FD frames.
-
-You have a good tutorial [here](https://sgframework.readthedocs.io/en/latest/cantutorial.html) describing the use of the virtual CAN interface.
-
-To connect to a real CAN bus you need a CAN adapter like [TouCAN](https://www.rusoku.com/products). There are other adapters to of course but I list (and recommend) TouCAN here because _Gediminas Simanskis_ the guy who has made it, has been around VSCP for many, many years now and on top of this is one of the best hardware engineers I know in the world.
-
-
-[This is a link](https://wiki.st.com/stm32mpu/wiki/How_to_set_up_a_SocketCAN_interface) to some info about setting up a real world CAN interface. But search on _socketcan_ and you will find plenty of information. 
 
 
 ---
