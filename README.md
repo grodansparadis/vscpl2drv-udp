@@ -18,7 +18,7 @@ You can find binary installation files [here](https://github.com/grodansparadis/
 
 You install the driver using the debian package with
 
-> sudo apt install ./vscpl2drv-udp_2026.10.2.deb
+> sudo apt install ./vscpl2drv-udp_2026.10.2_amd64.deb
 
 the driver will be installed to the folder _/var/lib/vscp/drivers/level2/_. 
 
@@ -83,6 +83,45 @@ make DESTDIR==/usr/local install
 ```
 
 to install to */usr/local/var/lib/vscp/drivers/level2*.
+
+### Build on macOS
+
+```bash
+brew install cmake openssl@3
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DOPENSSL_USE_STATIC_LIBS=TRUE
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+### Build on Windows
+
+Use Visual Studio 2022 and [vcpkg](https://vcpkg.io). Dependencies are listed in _vcpkg.json_ and are installed automatically during configuration. The static triplet gives a self-contained driver DLL.
+
+```powershell
+cmake -S . -B build -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+cmake --install build --config Release --prefix stage
+```
+
+The driver is installed as _drivers/level2/vscpl2drv-udp.dll_ below the selected prefix.
+
+### Continuous integration artifacts
+
+The GitHub Actions workflow builds, tests and packages the driver for every push and pull request:
+
+| Platform | Artifact |
+|----------|----------|
+| Linux amd64 | `.deb` and `.tar.gz` |
+| Raspberry Pi 32-bit (armhf, Debian/Raspberry Pi OS bookworm) | `.deb` and `.tar.gz` |
+| Raspberry Pi 64-bit (arm64, Debian/Raspberry Pi OS bookworm) | `.deb` and `.tar.gz` |
+| macOS arm64 and x86_64 | `.tar.gz` |
+| Windows x64 | `.zip` |
+
+Download them from the _Artifacts_ section of a workflow run.
 
 ## Configuration
 

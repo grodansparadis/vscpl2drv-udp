@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "vscpl2drv-udp",
+  "description": "VSCP Level II UDP driver",
+  "dependencies": [
+    "expat",
+    "openssl",
+    {
+      "name": "pthreads",
+      "platform": "windows"
+    }
+  ]
+}

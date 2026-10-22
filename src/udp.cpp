@@ -13,20 +13,126 @@
 #include <stdexcept>
 #include <system_error>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include <canal.h>
 #include <crc.h>
-#include <netdb.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
-#include <poll.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
-#include <unistd.h>
 
 namespace {
 constexpr size_t maxPacket = 38 + VSCP_LEVEL2_MAXDATA + 48 + 3;
 constexpr size_t maxQueue  = 32000;
+
+#ifdef _WIN32
+constexpr udp_socket_t invalidSocket = INVALID_SOCKET;
+using pollDescriptor                 = WSAPOLLFD;
+
+int
+socketErrorCode()
+{
+  return WSAGetLastError();
+}
+
+bool
+wouldBlock(int error)
+{
+  return error == WSAEWOULDBLOCK || error == WSAEINTR || error == WSAECONNRESET;
+}
+
+std::string
+socketErrorText(int error)
+{
+  return std::system_category().message(error);
+}
+
+int
+pollSocket(pollDescriptor &descriptor, int timeout)
+{
+  return WSAPoll(&descriptor, 1, timeout);
+}
+
+void
+closeSocket(udp_socket_t socket)
+{
+  closesocket(socket);
+}
+
+bool
+initSockets()
+{
+  static const bool initialized = [] {
+    WSADATA data;
+    return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+  }();
+  return initialized;
+}
+
+bool
+configureSocket(udp_socket_t socket)
+{
+  u_long enabled = 1;
+  return ioctlsocket(socket, FIONBIO, &enabled) == 0;
+}
+#else
+constexpr udp_socket_t invalidSocket = -1;
+using pollDescriptor                 = pollfd;
+
+int
+socketErrorCode()
+{
+  return errno;
+}
+
+bool
+wouldBlock(int error)
+{
+  return error == EAGAIN || error == EWOULDBLOCK || error == EINTR;
+}
+
+std::string
+socketErrorText(int error)
+{
+  return std::generic_category().message(error);
+}
+
+int
+pollSocket(pollDescriptor &descriptor, int timeout)
+{
+  return poll(&descriptor, 1, timeout);
+}
+
+void
+closeSocket(udp_socket_t socket)
+{
+  ::close(socket);
+}
+
+bool
+initSockets()
+{
+  return true;
+}
+
+bool
+configureSocket(udp_socket_t socket)
+{
+  const int flags = fcntl(socket, F_GETFL, 0);
+  return flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0 && fcntl(socket, F_SETFD, FD_CLOEXEC) == 0;
+}
+#endif
 
 void
 deleteEvent(vscpEvent *event)
@@ -73,10 +179,8 @@ logLevel(const std::string &name)
 }
 
 CUdp::CUdp()
+  : m_socket(invalidSocket)
 {
-  if (sem_init(&m_receiveReady, 0, 0)) {
-    throw std::system_error(errno, std::generic_category(), "sem_init");
-  }
   m_logger = spdlog::default_logger();
 }
 
@@ -85,7 +189,6 @@ CUdp::~CUdp()
   close();
   for (auto *event : m_receiveList)
     deleteEvent(event);
-  sem_destroy(&m_receiveReady);
   OPENSSL_cleanse(m_key.data(), m_key.size());
   OPENSSL_cleanse(m_hmac.data(), m_hmac.size());
 }
@@ -220,6 +323,10 @@ CUdp::setupSocket()
     m_logger->error("Invalid UDP host or port: {}", m_interface);
     return false;
   }
+  if (!initSockets()) {
+    m_logger->error("Cannot initialize socket library");
+    return false;
+  }
   addrinfo hints{};
   hints.ai_family     = AF_UNSPEC;
   hints.ai_socktype   = SOCK_DGRAM;
@@ -232,12 +339,18 @@ CUdp::setupSocket()
   }
   std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> guard(addresses, freeaddrinfo);
   for (auto *address = addresses; address; address = address->ai_next) {
-    m_socket = socket(address->ai_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (m_socket < 0)
+    if (address->ai_addrlen > m_destination.size())
+      continue;
+    m_socket = socket(address->ai_family, SOCK_DGRAM, 0);
+    if (m_socket == invalidSocket)
       continue;
     int enabled = 1;
-    bool ok =
-      address->ai_family != AF_INET || setsockopt(m_socket, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled)) == 0;
+    bool ok     = configureSocket(m_socket) &&
+              (address->ai_family != AF_INET || setsockopt(m_socket,
+                                                           SOL_SOCKET,
+                                                           SO_BROADCAST,
+                                                           reinterpret_cast<const char *>(&enabled),
+                                                           sizeof(enabled)) == 0);
     if (!(m_flags & 2)) {
       if (address->ai_family == AF_INET) {
         sockaddr_in local{};
@@ -253,14 +366,14 @@ CUdp::setupSocket()
       }
     }
     if (ok) {
-      memcpy(&m_destination, address->ai_addr, address->ai_addrlen);
-      m_destinationSize = address->ai_addrlen;
+      memcpy(m_destination.data(), address->ai_addr, address->ai_addrlen);
+      m_destinationSize = static_cast<int>(address->ai_addrlen);
       return true;
     }
-    const int error = errno;
-    ::close(m_socket);
-    m_socket = -1;
-    m_logger->error("Cannot configure/bind UDP socket: {}", strerror(error));
+    const int error = socketErrorCode();
+    closeSocket(m_socket);
+    m_socket = invalidSocket;
+    m_logger->error("Cannot configure/bind UDP socket: {}", socketErrorText(error));
   }
   m_logger->error("Cannot open UDP endpoint {}", m_interface);
   return false;
@@ -270,7 +383,7 @@ bool
 CUdp::open(const std::string &path, const cguid &)
 {
   std::lock_guard<std::mutex> lock(m_stateMutex);
-  if (m_socket >= 0) {
+  if (m_socket != invalidSocket) {
     m_logger->error("UDP driver is already open");
     return false;
   }
@@ -289,8 +402,8 @@ CUdp::open(const std::string &path, const cguid &)
   catch (const std::system_error &error) {
     m_logger->error("Cannot start UDP receiver: {}", error.what());
     m_quit = true;
-    ::close(m_socket);
-    m_socket = -1;
+    closeSocket(m_socket);
+    m_socket = invalidSocket;
     return false;
   }
   m_logger->debug(
@@ -302,12 +415,12 @@ void
 CUdp::close()
 {
   std::lock_guard<std::mutex> lock(m_stateMutex);
-  m_quit = true;
+  stopReceiver();
   if (m_worker.joinable())
     m_worker.join();
-  if (m_socket >= 0)
-    ::close(m_socket);
-  m_socket = -1;
+  if (m_socket != invalidSocket)
+    closeSocket(m_socket);
+  m_socket = invalidSocket;
 }
 
 bool
@@ -383,7 +496,7 @@ CUdp::write(const vscpEvent *event, unsigned long timeout)
     return CANAL_ERROR_PARAMETER;
   }
   std::lock_guard<std::mutex> lock(m_stateMutex);
-  if (m_quit || m_socket < 0)
+  if (m_quit || m_socket == invalidSocket)
     return CANAL_ERROR_NOT_OPEN;
   if (m_flags & 1)
     return CANAL_ERROR_NOT_SUPPORTED;
@@ -394,22 +507,33 @@ CUdp::write(const vscpEvent *event, unsigned long timeout)
     m_logger->error("Cannot encode/encrypt UDP event");
     return CANAL_ERROR_INTERNAL;
   }
-  pollfd descriptor{ m_socket, POLLOUT, 0 };
-  const int ready = poll(&descriptor, 1, static_cast<int>(std::min<unsigned long>(timeout, INT_MAX)));
-  if (!ready)
-    return CANAL_ERROR_TIMEOUT;
-  if (ready < 0 || !(descriptor.revents & POLLOUT)) {
-    m_logger->error("UDP send poll failed: {}", ready < 0 ? strerror(errno) : "socket error");
-    return CANAL_ERROR_COMMUNICATION;
-  }
-  if (sendto(m_socket,
-             packet.data(),
-             packet.size(),
-             0,
-             reinterpret_cast<const sockaddr *>(&m_destination),
-             m_destinationSize) != static_cast<ssize_t>(packet.size())) {
-    m_logger->error("UDP send failed: {}", strerror(errno));
-    return CANAL_ERROR_COMMUNICATION;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
+  while (true) {
+    const auto sent = sendto(m_socket,
+                             reinterpret_cast<const char *>(packet.data()),
+                             static_cast<int>(packet.size()),
+                             0,
+                             reinterpret_cast<const sockaddr *>(m_destination.data()),
+                             m_destinationSize);
+    if (sent == static_cast<decltype(sent)>(packet.size()))
+      break;
+    const int error = socketErrorCode();
+    if (sent >= 0 || !wouldBlock(error)) {
+      m_logger->error("UDP send failed: {}", sent < 0 ? socketErrorText(error) : "short write");
+      return CANAL_ERROR_COMMUNICATION;
+    }
+    const auto remaining =
+      std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+    if (remaining <= 0)
+      return CANAL_ERROR_TIMEOUT;
+    pollDescriptor descriptor{};
+    descriptor.fd     = m_socket;
+    descriptor.events = POLLOUT;
+    if (pollSocket(descriptor, static_cast<int>(std::min<long long>(remaining, INT_MAX))) < 0 &&
+        !wouldBlock(socketErrorCode())) {
+      m_logger->error("UDP send poll failed: {}", socketErrorText(socketErrorCode()));
+      return CANAL_ERROR_COMMUNICATION;
+    }
   }
   return CANAL_ERROR_SUCCESS;
 }
@@ -425,29 +549,12 @@ CUdp::read(vscpEvent *event, unsigned long timeout)
     return CANAL_ERROR_NOT_OPEN;
   if (m_flags & 2)
     return CANAL_ERROR_NOT_SUPPORTED;
-  const auto start = std::chrono::steady_clock::now();
-  while (true) {
-    if (m_quit)
-      return CANAL_ERROR_NOT_OPEN;
-    const auto elapsed =
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-    const auto remaining = elapsed >= timeout ? 0 : timeout - static_cast<unsigned long>(elapsed);
-    if (vscp_sem_wait(&m_receiveReady, std::min<unsigned long>(remaining, 20)) == 0)
-      break;
-    if (errno == ETIMEDOUT || errno == EAGAIN) {
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() >=
-          timeout)
-        return CANAL_ERROR_TIMEOUT;
-      continue;
-    }
-    m_logger->error("UDP receive wait failed: {}", strerror(errno));
-    return CANAL_ERROR_INTERNAL;
-  }
-  std::lock_guard<std::mutex> lock(m_receiveMutex);
-  if (m_receiveList.empty()) {
-    m_logger->error("UDP receive queue/semaphore mismatch");
-    return CANAL_ERROR_INTERNAL;
-  }
+  std::unique_lock<std::mutex> lock(m_receiveMutex);
+  if (!m_receiveReady.wait_for(
+        lock, std::chrono::milliseconds(timeout), [this] { return m_quit || !m_receiveList.empty(); }))
+    return CANAL_ERROR_TIMEOUT;
+  if (m_receiveList.empty())
+    return CANAL_ERROR_NOT_OPEN;
   auto *received = m_receiveList.front();
   m_receiveList.pop_front();
   *event          = *received;
@@ -457,27 +564,41 @@ CUdp::read(vscpEvent *event, unsigned long timeout)
 }
 
 void
+CUdp::stopReceiver()
+{
+  {
+    std::lock_guard<std::mutex> lock(m_receiveMutex);
+    m_quit = true;
+  }
+  m_receiveReady.notify_all();
+}
+
+void
 CUdp::worker()
 {
   try {
     while (!m_quit) {
-      pollfd descriptor{ m_socket, POLLIN, 0 };
-      const int ready = poll(&descriptor, 1, 20);
-      if (ready < 0 && errno == EINTR)
+      pollDescriptor descriptor{};
+      descriptor.fd     = m_socket;
+      descriptor.events = POLLIN;
+      const int ready   = pollSocket(descriptor, 20);
+      if (ready < 0 && wouldBlock(socketErrorCode()))
         continue;
-      if (ready < 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) {
-        m_logger->error("UDP receiver socket failed: {}", ready < 0 ? strerror(errno) : "socket error");
-        m_quit = true;
+      if (ready < 0 || (descriptor.revents & POLLNVAL)) {
+        m_logger->error("UDP receiver socket failed: {}",
+                        ready < 0 ? socketErrorText(socketErrorCode()) : "invalid socket");
+        stopReceiver();
         break;
       }
       if (!ready)
         continue;
       std::array<uint8_t, maxPacket + 1> packet{};
-      const ssize_t size = recvfrom(m_socket, packet.data(), packet.size(), 0, nullptr, nullptr);
+      const auto size = recvfrom(
+        m_socket, reinterpret_cast<char *>(packet.data()), static_cast<int>(packet.size()), 0, nullptr, nullptr);
       if (size < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-          continue;
-        m_logger->error("UDP receive failed: {}", strerror(errno));
+        const int error = socketErrorCode();
+        if (!wouldBlock(error))
+          m_logger->error("UDP receive failed: {}", socketErrorText(error));
         continue;
       }
       std::unique_ptr<vscpEvent, decltype(&deleteEvent)> event(new vscpEvent{}, deleteEvent);
@@ -495,11 +616,11 @@ CUdp::worker()
       }
       m_receiveList.push_back(event.get());
       event.release();
-      sem_post(&m_receiveReady);
+      m_receiveReady.notify_one();
     }
   }
   catch (const std::exception &error) {
     m_logger->error("UDP receiver stopped: {}", error.what());
-    m_quit = true;
+    stopReceiver();
   }
 }

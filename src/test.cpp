@@ -8,7 +8,17 @@
 #include <openssl/hmac.h>
 #include <vscphelper.h>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -18,10 +28,9 @@
 #include <future>
 #include <iostream>
 #include <memory>
-#include <poll.h>
+#include <random>
 #include <stdexcept>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -34,12 +43,48 @@ check(bool condition, const std::string &message)
     throw std::runtime_error(message);
 }
 
+#ifdef _WIN32
+using socket_t                = SOCKET;
+const socket_t invalidSocket = INVALID_SOCKET;
+
+void
+closeSocket(socket_t fd)
+{
+  closesocket(fd);
+}
+
+int
+pollIn(socket_t fd, int timeout)
+{
+  WSAPOLLFD descriptor{};
+  descriptor.fd     = fd;
+  descriptor.events = POLLIN;
+  return WSAPoll(&descriptor, 1, timeout);
+}
+#else
+using socket_t                = int;
+const socket_t invalidSocket = -1;
+
+void
+closeSocket(socket_t fd)
+{
+  ::close(fd);
+}
+
+int
+pollIn(socket_t fd, int timeout)
+{
+  pollfd descriptor{ fd, POLLIN, 0 };
+  return poll(&descriptor, 1, timeout);
+}
+#endif
+
 struct Socket {
-  int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  socket_t fd = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in address{};
   Socket()
   {
-    check(fd >= 0, "socket");
+    check(fd != invalidSocket, "socket");
     address.sin_family      = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     check(bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0, "bind");
@@ -48,16 +93,15 @@ struct Socket {
   }
   ~Socket()
   {
-    if (fd >= 0)
-      ::close(fd);
+    if (fd != invalidSocket)
+      closeSocket(fd);
   }
   unsigned port() const { return ntohs(address.sin_port); }
   std::vector<uint8_t> receive()
   {
-    pollfd descriptor{ fd, POLLIN, 0 };
-    check(poll(&descriptor, 1, 1000) == 1, "outbound packet missing");
+    check(pollIn(fd, 1000) == 1, "outbound packet missing");
     std::vector<uint8_t> packet(2048);
-    const auto size = recv(fd, packet.data(), packet.size(), 0);
+    const auto size = recv(fd, reinterpret_cast<char *>(packet.data()), static_cast<int>(packet.size()), 0);
     check(size > 0, "recv");
     packet.resize(size);
     return packet;
@@ -67,8 +111,12 @@ struct Socket {
     auto destination     = address;
     destination.sin_port = htons(port);
     check(
-      sendto(fd, packet.data(), packet.size(), 0, reinterpret_cast<sockaddr *>(&destination), sizeof(destination)) ==
-        static_cast<ssize_t>(packet.size()),
+      sendto(fd,
+             reinterpret_cast<const char *>(packet.data()),
+             static_cast<int>(packet.size()),
+             0,
+             reinterpret_cast<sockaddr *>(&destination),
+             sizeof(destination)) == static_cast<int>(packet.size()),
       "sendto");
   }
 };
@@ -86,10 +134,13 @@ struct Files {
   std::filesystem::path dir;
   Files()
   {
-    char pattern[]   = "/tmp/vscp-udp-test-XXXXXX";
-    const char *path = mkdtemp(pattern);
-    check(path, "mkdtemp");
-    dir = path;
+    std::random_device random;
+    for (int attempt = 0; attempt < 100 && dir.empty(); ++attempt) {
+      auto candidate = std::filesystem::temp_directory_path() / ("vscp-udp-test-" + std::to_string(random()));
+      if (std::filesystem::create_directory(candidate))
+        dir = candidate;
+    }
+    check(!dir.empty(), "create temporary directory");
   }
   ~Files() { std::filesystem::remove_all(dir); }
   std::string put(const std::string &name, const std::string &text)
@@ -172,8 +223,8 @@ roundTrip(Files &files, const std::string &mode, int encryption, bool authentica
 
   Socket reservation;
   const unsigned serverPort = reservation.port();
-  ::close(reservation.fd);
-  reservation.fd      = -1;
+  closeSocket(reservation.fd);
+  reservation.fd = invalidSocket;
   config["interface"] = "udp://127.0.0.1:" + std::to_string(serverPort);
   config["flags"]     = 1;
   Handle server{ VSCPOpen(files.put("server.json", config.dump()).c_str(), guid) };
@@ -331,8 +382,8 @@ configurationTests(Files &files)
   Socket reservation;
   auto config =
     nlohmann::json{ { "interface", "udp://127.0.0.1:" + std::to_string(reservation.port()) }, { "flags", 0 } };
-  ::close(reservation.fd);
-  reservation.fd = -1;
+  closeSocket(reservation.fd);
+  reservation.fd = invalidSocket;
   Handle duplex{ VSCPOpen(files.put("duplex.json", config.dump()).c_str(), guid) };
   check(duplex.value, "duplex open");
   vscpEvent event{}, received{};
@@ -382,15 +433,15 @@ configurationTests(Files &files)
 void
 ipv6AndDnsTests(Files &files)
 {
-  const int fd = socket(AF_INET6, SOCK_DGRAM, 0);
-  check(fd >= 0, "IPv6 socket");
+  const socket_t fd = socket(AF_INET6, SOCK_DGRAM, 0);
+  check(fd != invalidSocket, "IPv6 socket");
   sockaddr_in6 address{};
   address.sin6_family = AF_INET6;
   address.sin6_addr   = in6addr_loopback;
   check(bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0, "IPv6 bind");
   socklen_t size = sizeof(address);
   check(getsockname(fd, reinterpret_cast<sockaddr *>(&address), &size) == 0, "IPv6 getsockname");
-  ::close(fd);
+  closeSocket(fd);
   for (const std::string &host : { "[::1]", "localhost" }) {
     auto config = nlohmann::json{ { "interface", "udp://" + host + ":" + std::to_string(ntohs(address.sin6_port)) },
                                   { "flags", 0 },
@@ -412,6 +463,14 @@ ipv6AndDnsTests(Files &files)
 int
 main()
 {
+#ifdef _WIN32
+  WSADATA data;
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    std::cerr << "UDP test failure: WSAStartup\n";
+    return 1;
+  }
+#endif
+  crcInit();
   try {
     Files files;
     configurationTests(files);

@@ -87,7 +87,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 
 # Default location for VSCP level II drivers
-set(VSCP_LEVEL2_DRV_DIR /var/lib/vscp/drivers/level2/)
+if(WIN32)
+  set(VSCP_LEVEL2_DRV_DIR drivers/level2)
+else()
+  set(VSCP_LEVEL2_DRV_DIR /var/lib/vscp/drivers/level2/)
+endif()
 
 # Generate position-independent code (-fPIC on UNIX)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -114,7 +118,12 @@ IF(EXISTS "${CMAKE_ROOT}/Modules/CPack.cmake")
   SET(CPACK_PACKAGE_VERSION_MAJOR "${MAJOR_VERSION}")
   SET(CPACK_PACKAGE_VERSION_MINOR "${MINOR_VERSION}")
   SET(CPACK_PACKAGE_VERSION_PATCH "${PATCH_VERSION}")
-  SET(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}_${MAJOR_VERSION}.${MINOR_VERSION}.${CPACK_PACKAGE_VERSION_PATCH}")
+  if(NOT DEFINED VSCP_PACKAGE_PLATFORM)
+    set(VSCP_PACKAGE_PLATFORM "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+  SET(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}_${MAJOR_VERSION}.${MINOR_VERSION}.${CPACK_PACKAGE_VERSION_PATCH}_${VSCP_PACKAGE_PLATFORM}")
+  SET(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+  SET(CPACK_RPM_FILE_NAME RPM-DEFAULT)
   SET(CPACK_SOURCE_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}_${MAJOR_VERSION}.${MINOR_VERSION}.${CPACK_PACKAGE_VERSION_PATCH}")
 #  SET(CPACK_IGNORE_FILES "\\.psd$;/CVS/;/\\.svn/;/\\.git/;\\.swp$;/CMakeLists.txt.user;\\.#;/#;\\.tar.gz$;/CMakeFiles/;CMakeCache.txt;\\.qm$;/build/;\\.diff$;.DS_Store'")
 #  set(CPACK_SOURCE_IGNORE_FILES ${CPACK_IGNORE_FILES})
@@ -146,6 +155,20 @@ find_package(Threads REQUIRED)
 #openssl
 find_package(OpenSSL REQUIRED)
 find_package(EXPAT REQUIRED)
+
+if(WIN32)
+  # VSCP headers include <semaphore.h>; pthreads4w provides it for MSVC.
+  if(MSVC)
+    find_package(PThreads4W REQUIRED)
+    set(VSCP_WINDOWS_THREAD_LIBS PThreads4W::PThreads4W)
+  endif()
+  add_compile_definitions(WIN32 _WIN32 WIN32_LEAN_AND_MEAN NOMINMAX
+                          _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
+  if(VCPKG_TARGET_TRIPLET MATCHES "static")
+    add_compile_definitions(XML_STATIC)
+  endif()
+  add_compile_options("$<$<C_COMPILER_ID:MSVC>:/utf-8>" "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+endif()
 
 
 include(FetchContent)
@@ -203,12 +226,7 @@ set(RESOURCE_FILES
         README.md
         forms/index.html)
 
-# Add files to library
-add_library(vscpl2drv-udp
-  ${CMAKE_SOURCE_DIR}/src/vscpl2drv-udp.h
-  ${CMAKE_SOURCE_DIR}/src/vscpl2drv-udp.cpp
-  ${CMAKE_SOURCE_DIR}/src/udp.h
-  ${CMAKE_SOURCE_DIR}/src/udp.cpp
+set(VSCP_COMMON_SOURCES
   ${vscp_SOURCE_DIR}/src/vscp/common/guid.h
   ${vscp_SOURCE_DIR}/src/vscp/common/guid.cpp
   ${vscp_SOURCE_DIR}/src/vscp/common/vscphelper.h
@@ -219,7 +237,16 @@ add_library(vscpl2drv-udp
   ${vscp_SOURCE_DIR}/src/common/vscpbase64.c
   ${vscp_SOURCE_DIR}/src/common/vscpmd5.c
   ${vscp_SOURCE_DIR}/src/common/vscphelper-common.cpp
-) 
+)
+
+# Add files to library
+add_library(vscpl2drv-udp
+  ${CMAKE_SOURCE_DIR}/src/vscpl2drv-udp.h
+  ${CMAKE_SOURCE_DIR}/src/vscpl2drv-udp.cpp
+  ${CMAKE_SOURCE_DIR}/src/udp.h
+  ${CMAKE_SOURCE_DIR}/src/udp.cpp
+  ${VSCP_COMMON_SOURCES}
+)
 
 
 include_directories( PUBLIC src/
@@ -231,13 +258,15 @@ include_directories( PUBLIC src/
     "${OPENSSL_INCLUDE_DIR}"
     "${spdlog_SOURCE_DIR}/include/"
     "${nlohmann_json_SOURCE_DIR}/include/" )
+
+if(WIN32)
+  target_include_directories(vscpl2drv-udp PRIVATE "${vscp_SOURCE_DIR}/src/common/windows")
+endif()
+set_target_properties(vscpl2drv-udp PROPERTIES DEFINE_SYMBOL VSCPL2DRV_UDP_EXPORTS)
   
 
 
 target_link_libraries(vscpl2drv-udp PRIVATE
-    m
-    dl
-    z
     Threads::Threads
     OpenSSL::SSL 
     OpenSSL::Crypto
@@ -245,23 +274,40 @@ target_link_libraries(vscpl2drv-udp PRIVATE
     spdlog::spdlog_header_only
     nlohmann_json)
 
+if(WIN32)
+  target_link_libraries(vscpl2drv-udp PRIVATE ${VSCP_WINDOWS_THREAD_LIBS} ws2_32 crypt32)
+else()
+  target_link_libraries(vscpl2drv-udp PRIVATE m dl z)
+endif()
+
 if(UNIX AND NOT APPLE)
   set_property(TARGET vscpl2drv-udp APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--no-undefined")
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
-  add_executable(udp-test src/test.cpp)
-  target_link_libraries(udp-test PRIVATE vscpl2drv-udp OpenSSL::Crypto Threads::Threads nlohmann_json)
+  # The test uses VSCP frame/CRC helpers, which the driver does not export.
+  add_executable(udp-test src/test.cpp ${VSCP_COMMON_SOURCES})
+  target_link_libraries(udp-test PRIVATE vscpl2drv-udp OpenSSL::Crypto EXPAT::EXPAT Threads::Threads nlohmann_json)
+  if(WIN32)
+    target_include_directories(udp-test PRIVATE "${vscp_SOURCE_DIR}/src/common/windows")
+    target_link_libraries(udp-test PRIVATE ${VSCP_WINDOWS_THREAD_LIBS} ws2_32 crypt32)
+  endif()
   add_test(NAME udp-loopback COMMAND udp-test)
 endif()
 
 
 # Install
 
-install(TARGETS vscpl2drv-udp
-          LIBRARY DESTINATION ${CMAKE_INSTALL_FULL_}${VSCP_LEVEL2_DRV_DIR}
-          RUNTIME DESTINATION ${CMAKE_INSTALL_MANDIR}            
-          RESOURCE DESTINATION ${CMAKE_INSTALL_FULL_}/var/lib/vscp/vscpd) 
+if(WIN32)
+  install(TARGETS vscpl2drv-udp RUNTIME DESTINATION ${VSCP_LEVEL2_DRV_DIR})
+  install(FILES ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_SOURCE_DIR}/LICENSE
+          DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/vscpl2drv-udp/")
+else()
+  install(TARGETS vscpl2drv-udp
+            LIBRARY DESTINATION ${CMAKE_INSTALL_FULL_}${VSCP_LEVEL2_DRV_DIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_MANDIR}            
+            RESOURCE DESTINATION ${CMAKE_INSTALL_FULL_}/var/lib/vscp/vscpd) 
+endif()
 install(FILES ${CMAKE_SOURCE_DIR}/resources/linux/udp.json
           DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/vscpl2drv-udp/")

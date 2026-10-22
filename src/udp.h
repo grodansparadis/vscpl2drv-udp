@@ -4,12 +4,12 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <list>
 #include <memory>
 #include <mutex>
-#include <semaphore.h>
 #include <string>
-#include <sys/socket.h>
 #include <thread>
 #include <vector>
 
@@ -17,6 +17,12 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <vscphelper.h>
+
+#ifdef _WIN32
+using udp_socket_t = std::uintptr_t;
+#else
+using udp_socket_t = int;
+#endif
 
 class CUdp {
 public:
@@ -31,6 +37,7 @@ private:
   bool loadConfig(const std::string &path);
   bool setupSocket();
   void worker();
+  void stopReceiver();
   bool encode(const vscpEvent &event, std::vector<uint8_t> &packet);
   bool decode(const uint8_t *packet, size_t size, vscpEvent &event);
 
@@ -43,13 +50,13 @@ private:
   vscpEventFilter m_filterIn{};
   vscpEventFilter m_filterOut{};
   std::shared_ptr<spdlog::logger> m_logger;
-  int m_socket = -1;
-  sockaddr_storage m_destination{};
-  socklen_t m_destinationSize = 0;
+  udp_socket_t m_socket;
+  std::array<uint8_t, 128> m_destination{};
+  int m_destinationSize = 0;
   std::atomic<bool> m_quit{ true };
   std::thread m_worker;
   std::mutex m_stateMutex;
   std::mutex m_receiveMutex;
   std::list<vscpEvent *> m_receiveList;
-  sem_t m_receiveReady;
+  std::condition_variable m_receiveReady;
 };

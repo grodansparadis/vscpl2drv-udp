@@ -1,0 +1,234 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  version:
+    name: Bump patch version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: version-bump-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      sha: ${{ steps.bump.outputs.sha || github.sha }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.actor != 'github-actions[bot]'
+        with:
+          ref: master
+
+      - name: Bump patch and commit
+        id: bump
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.actor != 'github-actions[bot]'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git reset --hard origin/master
+            version=$(bash tools/bump_version.sh)
+            git commit -am "Bump version to ${version} [skip ci]"
+            if git push origin HEAD:master; then
+              echo "version=${version}" >> "$GITHUB_OUTPUT"
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Failed to push version bump" >&2
+          exit 1
+
+  linux:
+    name: Linux ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            deb_arch: amd64
+          - name: Raspberry Pi 32-bit (armhf)
+            # GitHub's ARM runners cannot execute 32-bit ARM code, so emulate it.
+            runner: ubuntu-latest
+            platform: linux/arm/v7
+            deb_arch: armhf
+            qemu: true
+          - name: Raspberry Pi 64-bit (arm64)
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            deb_arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Enable cross-architecture emulation
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+        with:
+          platforms: arm
+
+      - name: Build, test and package
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          docker run --rm \
+            --platform "$TARGET_PLATFORM" \
+            --network host \
+            --env DEB_ARCH \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            debian:bookworm \
+            bash -euc '
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                build-essential \
+                cmake \
+                git \
+                libexpat1-dev \
+                libssl-dev \
+                pandoc \
+                zlib1g-dev
+              cmake -S . -B build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX=/ \
+                -DCPACK_DEBIAN_PACKAGE_ARCHITECTURE="$DEB_ARCH" \
+                -DVSCP_PACKAGE_PLATFORM="linux-$DEB_ARCH"
+              cmake --build build --parallel "$(nproc)"
+              ctest --test-dir build --output-on-failure --timeout 300
+              cd build
+              cpack -G "DEB;TGZ"
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscpl2drv-udp-linux-${{ matrix.deb_arch }}
+          path: |
+            build/*.deb
+            build/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Install dependencies
+        run: brew install openssl@3
+
+      - name: Configure
+        # Link OpenSSL statically so the driver does not depend on Homebrew at runtime.
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DVSCP_PACKAGE_PLATFORM=macos-${{ matrix.arch }}
+
+      - name: Build
+        run: cmake --build build --parallel "$(sysctl -n hw.ncpu)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
+      - name: Package
+        run: |
+          otool -L build/libvscpl2drv-udp.dylib
+          cd build
+          cpack -G TGZ
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscpl2drv-udp-macos-${{ matrix.arch }}
+          path: build/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: version
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            # Static dependencies give a self-contained driver DLL.
+            triplet: x64-windows-static-md
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Prepare vcpkg binary cache
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          "VCPKG_COMMIT=$(git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD)" >> $env:GITHUB_ENV
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A ${{ matrix.arch }} `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} `
+            -DVSCP_PACKAGE_PLATFORM=windows-${{ matrix.arch }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $parts = foreach ($name in 'MAJOR_VERSION', 'MINOR_VERSION', 'PATCH_VERSION') {
+            (Select-String -Path src/version.h -Pattern "^#define\s+$name\s+(\d+)").Matches[0].Groups[1].Value
+          }
+          $stage = "vscpl2drv-udp_$($parts -join '.')_windows-${{ matrix.arch }}"
+          cmake --install build --config Release --prefix $stage
+          Get-ChildItem -Recurse $stage | Select-Object FullName, Length
+          Compress-Archive -Path "$stage/*" -DestinationPath "build/$stage.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscpl2drv-udp-windows-${{ matrix.arch }}
+          path: build/*.zip
+          if-no-files-found: error
+          retention-days: 3
