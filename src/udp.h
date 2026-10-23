@@ -18,6 +18,12 @@
 #include <spdlog/spdlog.h>
 #include <vscphelper.h>
 
+struct SecureKeyDeleter {
+  void operator()(uint8_t *key) const noexcept;
+};
+
+using SecureKey = std::unique_ptr<uint8_t, SecureKeyDeleter>;
+
 #ifdef _WIN32
 using udp_socket_t = std::uintptr_t;
 #else
@@ -40,13 +46,14 @@ private:
   void stopReceiver();
   bool encode(const vscpEvent &event, std::vector<uint8_t> &packet);
   bool decode(const uint8_t *packet, size_t size, vscpEvent &event);
+  void clearKeys() noexcept;
 
-  std::string m_interface = "udp://255.255.255.255:9999";
+  std::string m_interface = "udp://255.255.255.255:33333";
   uint32_t m_flags        = 0;
   uint8_t m_encryption    = VSCP_ENCRYPTION_NONE;
   bool m_authenticated    = false;
-  std::array<uint8_t, 32> m_key{};
-  std::array<uint8_t, 32> m_hmac{};
+  SecureKey m_key;
+  SecureKey m_hmac;
   vscpEventFilter m_filterIn{};
   vscpEventFilter m_filterOut{};
   std::shared_ptr<spdlog::logger> m_logger;

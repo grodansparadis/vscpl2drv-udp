@@ -1,11 +1,12 @@
 {
-  "debug": false,
   "write": false,
-  "interface": "udp://255.255.255.255:9999",
+  "interface": "udp://255.255.255.255:33333",
   "flags": 0,
-  "key": "",
-  "hmac": "",
-  "encryption": "none",
+  "security": {
+    "key": "",
+    "hmac": "",
+    "encryption": "none"
+  },
   "logging": {
     "console-enable": true,
     "console-level": "info",
@@ -15,7 +16,15 @@
     "file-log-path": "/var/log/vscp/vscpl2drv-udp.log",
     "file-log-pattern": "[vscpl2drv-udp] [%l] %v",
     "file-log-max-size": 5242880,
-    "file-log-max-files": 7
+    "file-log-max-files": 7,
+    "syslog-enable-log": false,
+    "syslog-log-level": "info",
+    "syslog-ident": "vscpl2drv-udp",
+    "udp-enable-log": false,
+    "udp-log-level": "info",
+    "udp-pattern": "[vscpl2drv-udp] [%l] %v",
+    "udp-host": "127.0.0.1",
+    "udp-port": 9999
   },
   "filter": {
     "in-filter": "0,0,0,-",

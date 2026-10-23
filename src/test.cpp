@@ -3,6 +3,7 @@
 #include "vscpl2drv-udp.h"
 #include <canal.h>
 #include <crc.h>
+#include <guid.h>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -205,17 +206,126 @@ verifyWire(const std::vector<uint8_t> &packet, const vscpEvent &event, int encry
 }
 
 void
-roundTrip(Files &files, const std::string &mode, int encryption, bool authenticated)
+peerInterop(Files &files, const std::string &executable, nlohmann::json config, long server,
+            const std::string &driver, bool loadReceiver = true)
+{
+  auto quote = [](const std::string &text) {
+#ifdef _WIN32
+    check(text.find_first_of("\"%!\r\n") == std::string::npos,
+          "unsupported shell characters in test path");
+    return "\"" + text + "\"";
+#else
+    std::string result = "'";
+    for (char c : text)
+      result += c == '\'' ? "'\\''" : std::string(1, c);
+    return result + "'";
+#endif
+  };
+  auto run = [](const std::string &command) {
+#ifdef _WIN32
+    // cmd.exe needs an outer pair of quotes around a quoted executable path.
+    return std::system(("\"" + command + "\"").c_str());
+#else
+    return std::system(command.c_str());
+#endif
+  };
+  config["flags"] = 2;
+  const auto sendConfig = files.put("peer-send.json", config.dump());
+  const std::string driverOption = driver.empty() ? "" : " --driver " + quote(driver);
+  const std::string command = quote(executable) + " send --config " + quote(sendConfig) +
+                              driverOption +
+                              " --count 2 --interval 0 --class 1026 --type 65500 --data 01,02,ff --guid " + guid;
+  check(run(command) == 0, "standalone peer send");
+  cguid expectedGuid(guid);
+  for (int i = 0; i < 2; ++i) {
+    vscpEvent received{};
+    check(VSCPRead(server, &received, 3000) == CANAL_ERROR_SUCCESS, "driver receives peer event");
+    const bool matches = received.vscp_class == 1026 && received.vscp_type == 65500 &&
+                         received.sizeData == 3 && received.pdata[0] == 1 && received.pdata[1] == 2 &&
+                         received.pdata[2] == 255 && received.timestamp_ns != 0 &&
+                         memcmp(received.GUID, expectedGuid.getGUID(), 16) == 0;
+    delete[] received.pdata;
+    check(matches, "peer send metadata and payload");
+  }
+
+  Socket reservation;
+  const auto port = reservation.port();
+  closeSocket(reservation.fd);
+  reservation.fd = invalidSocket;
+  config["interface"] = "udp://127.0.0.1:" + std::to_string(port);
+  config["flags"] = 1;
+  const auto receiveConfig = files.put("peer-receive.json", config.dump());
+  const auto output = files.put("peer-output.json", "");
+  const auto diagnostics = files.put("peer-stderr.txt", "");
+  const std::string receiveCommand = quote(executable) + " receive --config " + quote(receiveConfig) +
+                                     (loadReceiver ? driverOption : "") +
+                                     " --count 2 --timeout 5000 > " + quote(output) + " 2> " + quote(diagnostics);
+  auto process = std::async(std::launch::async, [&] { return run(receiveCommand); });
+  bool ready = false;
+  for (int attempt = 0; attempt < 500; ++attempt) {
+    std::ifstream input(diagnostics);
+    std::string line;
+    while (std::getline(input, line))
+      ready = ready || line.find(driver.empty() || !loadReceiver ? "UDP peer ready" : "Driver ready") != std::string::npos;
+    if (ready || process.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  check(ready, "standalone peer receiver ready");
+  config["flags"] = 2;
+  uint8_t data[] = { 3, 4, 255 };
+  vscpEvent event{};
+  event.head = VSCP_HEADER16_FRAME_VERSION_UNIX_NS;
+  event.timestamp_ns = 1792680000123456789ULL;
+  event.vscp_class = 10;
+  event.vscp_type = 6;
+  event.sizeData = sizeof(data);
+  event.pdata = data;
+  if (driver.empty()) {
+    Handle client{ VSCPOpen(files.put("peer-driver.json", config.dump()).c_str(), guid) };
+    check(client.value, "driver sender for standalone peer");
+    for (int i = 0; i < 2; ++i)
+      check(VSCPWrite(client.value, &event, 1000) == CANAL_ERROR_SUCCESS, "driver sends to peer");
+  }
+  else {
+    const auto peerConfig = files.put("peer-driver.json", config.dump());
+    check(run(quote(executable) + " send --config " + quote(peerConfig) + (loadReceiver ? "" : driverOption) +
+              " --count 2 --interval 0 --data 03,04,ff") == 0,
+          "standalone and driver-loading CLI pair");
+  }
+  check(process.get() == 0, "standalone peer receive");
+  std::ifstream input(output);
+  std::string line;
+  for (int i = 0; i < 2; ++i) {
+    check(static_cast<bool>(std::getline(input, line)), "peer receive JSON line");
+    const auto json = nlohmann::json::parse(line);
+    check(json.at("class") == 10 && json.at("type") == 6 &&
+            json.at("guid") == "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00" &&
+            (driver.empty() ? json.at("timestamp_ns") == event.timestamp_ns :
+                              json.at("timestamp_ns").get<uint64_t>() != 0) &&
+            json.at("data") == nlohmann::json::array({ 3, 4, 255 }),
+          "peer receive JSON metadata and payload");
+  }
+  check(!std::getline(input, line), "no extra peer output");
+  if (!driver.empty() && loadReceiver)
+    check(run(quote(executable) + " receive --config " + quote(receiveConfig) + driverOption +
+              " --timeout 1 > " + quote(output) + " 2> " + quote(diagnostics)) != 0,
+          "loaded driver receive timeout is reported");
+}
+
+void
+roundTrip(Files &files, const std::string &mode, int encryption, bool authenticated, const std::string &peer,
+          const std::string &driver)
 {
   Socket capture;
   const std::string key(encryption == 1 ? 32 : encryption == 2 ? 48 : 64, '1');
   auto config = nlohmann::json{ { "interface", "udp://127.0.0.1:" + std::to_string(capture.port()) },
                                 { "flags", 2 },
-                                { "encryption", mode },
-                                { "key", files.put("aes.key", " \n" + key + "\n") },
+                                { "security", { { "encryption", mode },
+                                                { "key", files.put("aes.key", " \n" + key + "\n") } } },
                                 { "logging", { { "console-enable", false }, { "file-enable", false } } } };
   if (authenticated)
-    config["hmac"] = files.put("hmac.key", std::string(64, '2'));
+    config["security"]["hmac"] = files.put("hmac.key", std::string(64, '2'));
   Handle client{ VSCPOpen(files.put("client.json", config.dump()).c_str(), guid) };
   check(client.value, "client open " + mode);
   vscpEvent received{};
@@ -230,6 +340,12 @@ roundTrip(Files &files, const std::string &mode, int encryption, bool authentica
   Handle server{ VSCPOpen(files.put("server.json", config.dump()).c_str(), guid) };
   check(server.value, "server open");
   check(VSCPOpen(files.put("collision.json", config.dump()).c_str(), guid) == 0, "bind collision must fail");
+  if (!peer.empty())
+    peerInterop(files, peer, config, server.value, "");
+  if (!peer.empty() && !driver.empty())
+    peerInterop(files, peer, config, server.value, driver);
+  if (!peer.empty() && !driver.empty())
+    peerInterop(files, peer, config, server.value, driver, false);
 
   std::array<uint8_t, VSCP_LEVEL2_MAXDATA> data{};
   for (size_t i = 0; i < data.size(); ++i)
@@ -371,13 +487,69 @@ configurationTests(Files &files)
                                     { { "encryption", "aes128" }, { "key", bad } },
                                     { { "encryption", "aes192" }, { "key", aes } },
                                     { { "encryption", "aes128" }, { "key", aes }, { "hmac", bad } },
-                                    { { "encryption", "aes128" }, { "key", "/nonexistent/vscp.key" } } }) {
+                                    { { "encryption", "aes128" }, { "key", "/nonexistent/vscp.key" } },
+                                    { { "logging", { { "udp-enable-log", true }, { "udp-port", 0 } } } },
+                                    { { "logging", { { "udp-enable-log", true }, { "udp-port", 65536 } } } },
+                                    { { "logging", { { "udp-enable-log", true }, { "udp-port", "9999" } } } },
+                                    { { "logging", { { "udp-enable-log", true }, { "udp-log-level", "loud" } } } },
+                                    { { "logging", { { "syslog-enable-log", true }, { "syslog-log-level", "loud" } } } } }) {
     check(VSCPOpen(files.put("invalid.json", config.dump()).c_str(), guid) == 0, "invalid config accepted");
+    if (config.contains("encryption")) {
+      const nlohmann::json nested{ { "security", config } };
+      check(VSCPOpen(files.put("invalid-security.json", nested.dump()).c_str(), guid) == 0,
+            "invalid nested security accepted");
+    }
+  }
+  for (const auto &security : std::vector<nlohmann::json>{
+         nullptr, false, 1, "none", nlohmann::json::array(),
+         { { "encryption", false } }, { { "encryption", "aes128" }, { "key", 123 } }, { { "hmac", 123 } } }) {
+    const nlohmann::json config{ { "security", security } };
+    check(VSCPOpen(files.put("bad-security.json", config.dump()).c_str(), guid) == 0,
+          "invalid security type accepted");
+  }
+  for (const std::string &name : { "key", "hmac", "encryption" }) {
+    const nlohmann::json config{ { "security", nlohmann::json::object() }, { name, "" } };
+    check(VSCPOpen(files.put("mixed-security.json", config.dump()).c_str(), guid) == 0,
+          "mixed security settings accepted");
+  }
+  for (bool nested : { false, true }) {
+    nlohmann::json config{ { "encryption", "aes128" }, { "key", aes }, { "hmac", hmac } };
+    if (nested)
+      config = nlohmann::json{ { "security", config } };
+    config["flags"] = 3;
+    Handle driver{ VSCPOpen(files.put("valid-security.json", config.dump()).c_str(), guid) };
+    check(driver.value, "legacy/nested authenticated security open");
+  }
+  {
+    const nlohmann::json config{ { "security", nlohmann::json::object() }, { "flags", 3 } };
+    Handle driver{ VSCPOpen(files.put("empty-security.json", config.dump()).c_str(), guid) };
+    check(driver.value, "empty security defaults to plaintext");
   }
   check(VSCPOpen(files.put("invalid.json", "{").c_str(), guid) == 0, "invalid JSON");
   check(VSCPOpen(nullptr, guid) == 0, "null path");
   check(VSCPOpen("/nonexistent/udp.json", guid) == 0, "missing config");
   check(VSCPClose(123) == CANAL_ERROR_NOT_OPEN, "invalid close");
+
+  // Log messages are delivered to the UDP log collector. "localhost" checks
+  // that host names are resolved.
+  {
+    Socket collector;
+    auto logConfig = nlohmann::json{ { "flags", 3 },
+                                     { "logging",
+                                       { { "console-enable", false },
+                                         { "syslog-enable-log", true },
+                                         { "syslog-log-level", "off" },
+                                         { "udp-enable-log", true },
+                                         { "udp-log-level", "debug" },
+                                         { "udp-pattern", "udp-log: %v" },
+                                         { "udp-host", "localhost" },
+                                         { "udp-port", collector.port() } } } };
+    Handle logged{ VSCPOpen(files.put("udp-log.json", logConfig.dump()).c_str(), guid) };
+    check(logged.value, "UDP log open");
+    const auto packet = collector.receive();
+    const std::string line(packet.begin(), packet.end());
+    check(line.rfind("udp-log: UDP driver opened", 0) == 0, "UDP log message: " + line);
+  }
 
   Socket reservation;
   auto config =
@@ -461,7 +633,7 @@ ipv6AndDnsTests(Files &files)
 }
 
 int
-main()
+main(int argc, char **argv)
 {
 #ifdef _WIN32
   WSADATA data;
@@ -475,11 +647,13 @@ main()
     Files files;
     configurationTests(files);
     ipv6AndDnsTests(files);
-    roundTrip(files, "none", 0, false);
+    const std::string peer = argc >= 2 ? argv[1] : "";
+    const std::string driver = argc >= 3 ? argv[2] : "";
+    roundTrip(files, "none", 0, false, peer, driver);
     for (int encryption = 1; encryption <= 3; ++encryption) {
       const std::string mode = encryption == 1 ? "aes128" : encryption == 2 ? "aes192" : "aes256";
-      roundTrip(files, mode, encryption, false);
-      roundTrip(files, mode, encryption, true);
+      roundTrip(files, mode, encryption, false, peer, driver);
+      roundTrip(files, mode, encryption, true, peer, driver);
     }
     std::cout << "UDP tests passed\n";
     return 0;

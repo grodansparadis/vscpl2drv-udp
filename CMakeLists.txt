@@ -285,6 +285,39 @@ if(UNIX AND NOT APPLE)
 endif()
 
 include(CTest)
+option(BUILD_UDP_PEER "Build the standalone VSCP UDP test peer" ON)
+if(BUILD_UDP_PEER)
+  # Reuse the transport, but do not depend on the driver DLL/shared library.
+  add_executable(vscp-udp-peer src/udp-peer.cpp src/udp.cpp ${VSCP_COMMON_SOURCES})
+  target_link_libraries(vscp-udp-peer PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto
+    EXPAT::EXPAT spdlog::spdlog_header_only nlohmann_json)
+  if(WIN32)
+    target_include_directories(vscp-udp-peer PRIVATE "${vscp_SOURCE_DIR}/src/common/windows")
+    target_link_libraries(vscp-udp-peer PRIVATE ${VSCP_WINDOWS_THREAD_LIBS} ws2_32 crypt32)
+  else()
+    target_link_libraries(vscp-udp-peer PRIVATE m ${CMAKE_DL_LIBS} z)
+  endif()
+  install(TARGETS vscp-udp-peer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  if(BUILD_TESTING)
+    add_library(udp-invalid-driver MODULE src/test-invalid-driver.c)
+    add_test(NAME udp-peer-help COMMAND vscp-udp-peer --help)
+    add_test(NAME udp-peer-invalid-count COMMAND vscp-udp-peer receive --config unused --count 0)
+    add_test(NAME udp-peer-invalid-data COMMAND vscp-udp-peer send --config unused --data 01,)
+    add_test(NAME udp-peer-invalid-class COMMAND vscp-udp-peer send --config unused --class 65536)
+    add_test(NAME udp-peer-invalid-guid COMMAND vscp-udp-peer send --config unused --guid invalid)
+    add_test(NAME udp-peer-missing-config COMMAND vscp-udp-peer send)
+    add_test(NAME udp-peer-missing-driver COMMAND vscp-udp-peer receive --config unused
+      --driver "${CMAKE_CURRENT_BINARY_DIR}/missing-driver")
+    add_test(NAME udp-peer-driver-open-failure COMMAND vscp-udp-peer receive
+      --config "${CMAKE_CURRENT_BINARY_DIR}/missing-config.json" --driver $<TARGET_FILE:vscpl2drv-udp>)
+    add_test(NAME udp-peer-missing-export COMMAND vscp-udp-peer receive --config unused
+      --driver $<TARGET_FILE:udp-invalid-driver>)
+    set_tests_properties(udp-peer-invalid-count udp-peer-invalid-data udp-peer-invalid-class
+      udp-peer-invalid-guid udp-peer-missing-config udp-peer-missing-driver
+      udp-peer-driver-open-failure udp-peer-missing-export PROPERTIES WILL_FAIL TRUE)
+  endif()
+endif()
+
 if(BUILD_TESTING)
   # The test uses VSCP frame/CRC helpers, which the driver does not export.
   add_executable(udp-test src/test.cpp ${VSCP_COMMON_SOURCES})
@@ -293,7 +326,14 @@ if(BUILD_TESTING)
     target_include_directories(udp-test PRIVATE "${vscp_SOURCE_DIR}/src/common/windows")
     target_link_libraries(udp-test PRIVATE ${VSCP_WINDOWS_THREAD_LIBS} ws2_32 crypt32)
   endif()
-  add_test(NAME udp-loopback COMMAND udp-test)
+  if(BUILD_UDP_PEER)
+    add_dependencies(udp-test vscp-udp-peer)
+    add_dependencies(udp-test udp-invalid-driver)
+    add_test(NAME udp-loopback COMMAND udp-test $<TARGET_FILE:vscp-udp-peer> $<TARGET_FILE:vscpl2drv-udp>)
+  else()
+    add_test(NAME udp-loopback COMMAND udp-test)
+  endif()
+  set_tests_properties(udp-loopback PROPERTIES TIMEOUT 180)
 endif()
 
 
