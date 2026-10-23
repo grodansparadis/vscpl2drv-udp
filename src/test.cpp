@@ -235,7 +235,7 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
   const std::string driverOption = driver.empty() ? "" : " --driver " + quote(driver);
   const std::string command = quote(executable) + " send --config " + quote(sendConfig) +
                               driverOption +
-                              " --count 2 --interval 0 --class 1026 --type 65500 --data 01,02,ff --guid " + guid;
+                              " --count 2 --interval 0 --timeout infinite --class 1026 --type 65500 --data 01,02,ff --guid " + guid;
   check(run(command) == 0, "standalone peer send");
   std::cerr << "peerInterop: initial sends complete\n";
   cguid expectedGuid(guid);
@@ -261,7 +261,7 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
   const auto diagnostics = files.put("peer-stderr.txt", "");
   const std::string receiveCommand = quote(executable) + " receive --config " + quote(receiveConfig) +
                                      (loadReceiver ? driverOption : "") +
-                                     " --count 2 --timeout 5000 > " + quote(output) + " 2> " + quote(diagnostics);
+                                     " --count 2 --timeout infinite > " + quote(output) + " 2> " + quote(diagnostics);
   auto process = std::async(std::launch::async, [&] { return run(receiveCommand); });
   bool ready = false;
   for (int attempt = 0; attempt < 500; ++attempt) {
@@ -274,7 +274,12 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   check(ready, "standalone peer receiver ready");
-  std::cerr << "peerInterop: receiver ready\n";
+
+  if (config.at("security").value("encryption", std::string("none")) == "none") {
+    check(process.wait_for(std::chrono::milliseconds(1200)) == std::future_status::timeout,
+          "infinite timeout keeps receiver waiting across read timeouts");
+  }
+
   config["flags"] = 2;
   uint8_t data[] = { 3, 4, 255 };
   vscpEvent event{};

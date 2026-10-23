@@ -22,6 +22,7 @@
 #include <thread>
 
 namespace {
+
 void
 usage()
 {
@@ -31,7 +32,7 @@ usage()
                "  --driver FILE    Load a driver DLL/.so/.dylib and use its Level II API\n"
                "                   instead of the built-in UDP transport (optional)\n"
                "  --count N        Number of events to send/receive (default 1)\n"
-               "  --timeout MS     Per-event timeout, 0..3600000 (default 5000)\n"
+               "  --timeout MS     Per-event timeout, 0..3600000 or infinite (default 5000)\n"
                "Send options:\n"
                "  --class N        VSCP class, 0..65535 (default 10)\n"
                "  --type N         VSCP type, 0..65535 (default 6)\n"
@@ -45,6 +46,16 @@ usage()
                "AES and optional HMAC use security.encryption, security.key and security.hmac.\n";
 }
 
+/*!
+  Parse a number from a string, ensuring it is within the specified maximum.
+
+  Throws std::runtime_error if the value is invalid or out of range.
+  @param value The string to parse.
+  @param maximum The maximum allowed value.
+  @param name The name of the option (for error messages).
+  @param base The numeric base (default 10).
+  @return The parsed number.
+*/
 unsigned long
 number(const std::string &value, unsigned long maximum, const std::string &name, int base = 10)
 {
@@ -56,8 +67,13 @@ number(const std::string &value, unsigned long maximum, const std::string &name,
   return result;
 }
 
+/*!
+  Options struct for command-line options.
+*/
+
 struct Options {
   bool send = false;
+  bool infiniteTimeout = false;
   std::string config;
   std::string driver;
   unsigned long count    = 1;
@@ -69,28 +85,38 @@ struct Options {
   std::vector<uint8_t> data;
 };
 
+/*!
+  Parse command-line options into an Options struct.
+
+  Throws std::runtime_error on invalid options.
+*/
+
 Options
 parse(int argc, char **argv)
 {
   Options options;
   const std::string command = argv[1];
-  if (command != "send" && command != "receive")
+  if (command != "send" && command != "receive") {
     throw std::runtime_error("Expected send or receive command");
+  }
   options.send = command == "send";
   std::set<std::string> seen;
   for (int i = 2; i < argc; i += 2) {
     const std::string name = argv[i];
-    if (i + 1 == argc)
+    if (i + 1 == argc) {
       throw std::runtime_error("Missing value for " + name);
-    if (!seen.insert(name).second)
+    }
+    if (!seen.insert(name).second) {
       throw std::runtime_error("Repeated option: " + name);
+    }
     const std::string value = argv[i + 1];
     if (name == "--config") {
       options.config = value;
     }
     else if (name == "--driver") {
-      if (value.empty())
+      if (value.empty()) {
         throw std::runtime_error("--driver requires a library path");
+      }
       options.driver = value;
     }
     else if (name == "--count") {
@@ -99,7 +125,13 @@ parse(int argc, char **argv)
         throw std::runtime_error("--count must be at least 1");
     }
     else if (name == "--timeout") {
-      options.timeout = number(value, 3600000, name);
+      if (value == "infinite") {
+        options.infiniteTimeout = true;
+        options.timeout         = 1000;
+      }
+      else {
+        options.timeout = number(value, 3600000, name);
+      }
     }
     else if (!options.send) {
       throw std::runtime_error("Unknown receive option: " + name);
@@ -114,28 +146,34 @@ parse(int argc, char **argv)
       options.vscpType = static_cast<uint16_t>(number(value, 65535, name));
     }
     else if (name == "--guid") {
-      if (value.size() != 47)
+      if (value.size() != 47) {
         throw std::runtime_error("--guid must contain 16 colon-separated hexadecimal bytes");
+      }
       for (size_t byte = 0; byte < options.guid.size(); ++byte) {
-        if (byte && value[byte * 3 - 1] != ':')
+        if (byte && value[byte * 3 - 1] != ':') {
           throw std::runtime_error("Invalid GUID separator");
+        }
         options.guid[byte] = static_cast<uint8_t>(number(value.substr(byte * 3, 2), 255, name, 16));
       }
     }
     else if (name == "--data") {
-      if (value.empty())
+      if (value.empty()) {
         continue;
+      }
       size_t start = 0;
       do {
         const auto comma = value.find(',', start);
         const auto byte  = value.substr(start, comma == std::string::npos ? comma : comma - start);
-        if (byte.size() != 2)
+        if (byte.size() != 2) {
           throw std::runtime_error("--data must contain comma-separated two-digit hexadecimal bytes");
+        }
         options.data.push_back(static_cast<uint8_t>(number(byte, 255, name, 16)));
-        if (options.data.size() > VSCP_LEVEL2_MAXDATA)
+        if (options.data.size() > VSCP_LEVEL2_MAXDATA) {
           throw std::runtime_error("--data exceeds the VSCP maximum payload");
-        if (comma == std::string::npos)
+        }
+        if (comma == std::string::npos) {
           break;
+        }
         start = comma + 1;
       } while (true);
     }
@@ -143,11 +181,18 @@ parse(int argc, char **argv)
       throw std::runtime_error("Unknown option: " + name);
     }
   }
-  if (options.config.empty())
+  if (options.config.empty()) {
     throw std::runtime_error("--config is required");
+  }
   return options;
 }
 
+/*!
+  RAII wrapper for dynamically loaded driver libraries.
+
+  Loads the library at construction and unloads it at destruction.
+  Throws std::runtime_error if the library cannot be loaded.
+*/
 class DriverLibrary {
 public:
   explicit DriverLibrary(const std::string &path)
@@ -155,23 +200,27 @@ public:
 #ifdef _WIN32
     const auto wide = std::filesystem::u8path(path).wstring();
     m_library       = LoadLibraryW(wide.c_str());
-    if (!m_library)
+    if (!m_library) {
       throw std::runtime_error("Cannot load driver " + path + ": " + std::system_category().message(GetLastError()));
+    }
 #else
     m_library = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!m_library)
+    if (!m_library) {
       throw std::runtime_error("Cannot load driver " + path + ": " + dlerror());
+    }
 #endif
   }
 
   ~DriverLibrary()
   {
 #ifdef _WIN32
-    if (!FreeLibrary(m_library))
+    if (!FreeLibrary(m_library)) {
       std::cerr << "Cannot unload driver: " << std::system_category().message(GetLastError()) << '\n';
+    }
 #else
-    if (dlclose(m_library))
+    if (dlclose(m_library)) {
       std::cerr << "Cannot unload driver: " << dlerror() << '\n';
+    }
 #endif
   }
 
@@ -183,15 +232,16 @@ public:
   {
 #ifdef _WIN32
     auto address = GetProcAddress(m_library, name);
-    if (!address)
+    if (!address) {
       throw std::runtime_error(std::string("Missing driver export ") + name + ": " +
                                std::system_category().message(GetLastError()));
 #else
     dlerror();
     auto address      = dlsym(m_library, name);
     const char *error = dlerror();
-    if (error || !address)
+    if (error || !address) {
       throw std::runtime_error(std::string("Missing driver export ") + name + ": " + (error ? error : "null address"));
+    }
 #endif
     // The OS loader returns an untyped address; convert to the exact API type.
     return reinterpret_cast<Function>(address);
@@ -205,6 +255,12 @@ private:
 #endif
 };
 
+/*!
+  RAII wrapper for a driver session.
+
+  Opens the driver at construction and closes it at destruction.
+  Throws std::runtime_error if the driver cannot be opened.
+*/
 class DriverSession {
 public:
   DriverSession(const std::string &library, const std::string &config)
@@ -217,16 +273,18 @@ public:
     const auto version = m_library.symbol<decltype(&VSCPGetVersion)>("VSCPGetVersion");
     std::cerr << "Loaded driver version " << version() << '\n';
     m_handle = open(config.c_str(), "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00");
-    if (!m_handle)
+    if (!m_handle) {
       throw std::runtime_error("VSCPOpen failed; check driver configuration and bind port");
+    }
   }
 
   ~DriverSession()
   {
     if (m_handle) {
       const int result = m_close(m_handle);
-      if (result != CANAL_ERROR_SUCCESS)
+      if (result != CANAL_ERROR_SUCCESS) {
         std::cerr << "VSCPClose failed, CANAL error " << result << '\n';
+      }
     }
   }
 
@@ -241,8 +299,9 @@ public:
     const auto handle = m_handle;
     m_handle          = 0;
     const int result  = m_close(handle);
-    if (result != CANAL_ERROR_SUCCESS)
+    if (result != CANAL_ERROR_SUCCESS) {
       throw std::runtime_error("VSCPClose failed, CANAL error " + std::to_string(result));
+    }
   }
 
 private:
@@ -254,22 +313,35 @@ private:
   long m_handle = 0;
 };
 
+/*!
+  Print a VSCP event as JSON.
+
+  @param event The event to print.
+*/
 void
 printEvent(const vscpEvent &event)
 {
   nlohmann::json data = nlohmann::json::array();
-  for (size_t i = 0; i < event.sizeData; ++i)
+  for (size_t i = 0; i < event.sizeData; ++i) {
     data.push_back(event.pdata[i]);
+  }
   cguid guid(event.GUID);
   std::string guidText;
   guid.toString(guidText);
-  std::cout << nlohmann::json{
+  std::cout << nlohmann::json {
     { "head", event.head }, { "class", event.vscp_class },          { "type", event.vscp_type },
     { "guid", guidText },   { "timestamp_ns", event.timestamp_ns }, { "data", data }
   }.dump() << std::endl;
 }
-}
+} // namespace udp_peer
 
+/*!
+  Entry point for the UDP peer application.
+
+  @param argc The number of command-line arguments.
+  @param argv The command-line arguments.
+  @return Exit code.
+*/
 int
 main(int argc, char **argv)
 {
@@ -290,8 +362,9 @@ main(int argc, char **argv)
     std::unique_ptr<DriverSession> driver;
     if (options.driver.empty()) {
       peer = std::make_unique<CUdp>();
-      if (!peer->open(options.config, cguid{}))
+      if (!peer->open(options.config, cguid{})) {
         throw std::runtime_error("Cannot open UDP peer; check configuration and bind port");
+      }
     }
     else {
       driver = std::make_unique<DriverSession>(options.driver, options.config);
@@ -311,25 +384,34 @@ main(int argc, char **argv)
         // write() does not take ownership or modify the payload.
         auto data        = options.data;
         event.pdata      = data.empty() ? nullptr : data.data();
-        const int result = driver ? driver->write(&event, options.timeout) : peer->write(&event, options.timeout);
-        if (result != CANAL_ERROR_SUCCESS)
+        int result;
+        do {
+          result = driver ? driver->write(&event, options.timeout) : peer->write(&event, options.timeout);
+        } while (options.infiniteTimeout && result == CANAL_ERROR_TIMEOUT);
+        if (result != CANAL_ERROR_SUCCESS) {
           throw std::runtime_error("Send failed, CANAL error " + std::to_string(result));
+        }
         std::cerr << "Sent event " << i + 1 << '/' << options.count << '\n';
-        if (i + 1 < options.count)
+        if (i + 1 < options.count) {
           std::this_thread::sleep_for(std::chrono::milliseconds(options.interval));
+        }
       }
       else {
         auto deleter = [](vscpEvent *event) { vscp_deleteEvent_v2(&event); };
         std::unique_ptr<vscpEvent, decltype(deleter)> event(new vscpEvent{}, deleter);
-        const int result =
-          driver ? driver->read(event.get(), options.timeout) : peer->read(event.get(), options.timeout);
-        if (result != CANAL_ERROR_SUCCESS)
+        int result;
+        do {
+          result = driver ? driver->read(event.get(), options.timeout) : peer->read(event.get(), options.timeout);
+        } while (options.infiniteTimeout && result == CANAL_ERROR_TIMEOUT);
+        if (result != CANAL_ERROR_SUCCESS) {
           throw std::runtime_error("Receive failed (timeout or closed), CANAL error " + std::to_string(result));
+        }
         printEvent(*event);
       }
     }
-    if (driver)
+    if (driver) {
       driver->close();
+    }
     return 0;
   }
   catch (const std::exception &error) {

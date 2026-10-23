@@ -1,0 +1,10 @@
+{
+  "interface": "udp://127.0.0.1:33333",
+  "flags": 1,
+  "security": {
+    "encryption": "aes256",
+    "key": "/etc/vscp/vscp.key",
+    "hmac": "/etc/vscp/hmac.key"
+  },
+  "logging": { "console-enable": false }
+}
