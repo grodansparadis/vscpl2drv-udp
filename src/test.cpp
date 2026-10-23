@@ -518,14 +518,23 @@ configurationTests(Files &files)
                                     { { "logging", { { "udp-enable-log", true }, { "udp-port", 0 } } } },
                                     { { "logging", { { "udp-enable-log", true }, { "udp-port", 65536 } } } },
                                     { { "logging", { { "udp-enable-log", true }, { "udp-port", "9999" } } } },
-                                    { { "logging", { { "udp-enable-log", true }, { "udp-log-level", "loud" } } } },
-                                    { { "logging", { { "syslog-enable-log", true }, { "syslog-log-level", "loud" } } } } }) {
+                                    { { "logging", { { "udp-enable-log", true }, { "udp-log-level", "loud" } } } } }) {
     check(VSCPOpen(files.put("invalid.json", config.dump()).c_str(), guid) == 0, "invalid config accepted");
     if (config.contains("encryption")) {
       const nlohmann::json nested{ { "security", config } };
       check(VSCPOpen(files.put("invalid-security.json", nested.dump()).c_str(), guid) == 0,
             "invalid nested security accepted");
     }
+  }
+  {
+    const nlohmann::json config{ { "flags", 3 },
+                                 { "logging", { { "syslog-enable-log", true }, { "syslog-log-level", "loud" } } } };
+    Handle driver{ VSCPOpen(files.put("syslog-level.json", config.dump()).c_str(), guid) };
+#ifdef _WIN32
+    check(driver.value, "unsupported syslog settings must be ignored on Windows");
+#else
+    check(!driver.value, "invalid syslog level accepted");
+#endif
   }
   for (const auto &security : std::vector<nlohmann::json>{
          nullptr, false, 1, "none", nlohmann::json::array(),
@@ -573,6 +582,12 @@ configurationTests(Files &files)
                                          { "udp-port", collector.port() } } } };
     Handle logged{ VSCPOpen(files.put("udp-log.json", logConfig.dump()).c_str(), guid) };
     check(logged.value, "UDP log open");
+#ifdef _WIN32
+    const auto warning = collector.receive();
+    check(std::string(warning.begin(), warning.end())
+              .rfind("udp-log: syslog logging is not supported on Windows; syslog-enable-log ignored", 0) == 0,
+          "missing unsupported syslog warning");
+#endif
     const auto packet = collector.receive();
     const std::string line(packet.begin(), packet.end());
     check(line.rfind("udp-log: UDP driver opened", 0) == 0, "UDP log message: " + line);
