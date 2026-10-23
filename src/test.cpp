@@ -14,6 +14,7 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -86,6 +87,9 @@ struct Socket {
   Socket()
   {
     check(fd != invalidSocket, "socket");
+#ifndef _WIN32
+    check(fcntl(fd, F_SETFD, FD_CLOEXEC) == 0, "FD_CLOEXEC");
+#endif
     address.sin_family      = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     check(bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0, "bind");
