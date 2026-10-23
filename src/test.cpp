@@ -209,6 +209,7 @@ void
 peerInterop(Files &files, const std::string &executable, nlohmann::json config, long server,
             const std::string &driver, bool loadReceiver = true)
 {
+  std::cerr << "peerInterop: start (driver=" << !driver.empty() << ", loadReceiver=" << loadReceiver << ")\n";
   auto quote = [](const std::string &text) {
 #ifdef _WIN32
     check(text.find_first_of("\"%!\r\n") == std::string::npos,
@@ -236,6 +237,7 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
                               driverOption +
                               " --count 2 --interval 0 --class 1026 --type 65500 --data 01,02,ff --guid " + guid;
   check(run(command) == 0, "standalone peer send");
+  std::cerr << "peerInterop: initial sends complete\n";
   cguid expectedGuid(guid);
   for (int i = 0; i < 2; ++i) {
     vscpEvent received{};
@@ -272,6 +274,7 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   check(ready, "standalone peer receiver ready");
+  std::cerr << "peerInterop: receiver ready\n";
   config["flags"] = 2;
   uint8_t data[] = { 3, 4, 255 };
   vscpEvent event{};
@@ -293,7 +296,9 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
               " --count 2 --interval 0 --data 03,04,ff") == 0,
           "standalone and driver-loading CLI pair");
   }
+  std::cerr << "peerInterop: sender complete, waiting for receiver\n";
   const int status = process.get();
+  std::cerr << "peerInterop: receiver exited with " << status << '\n';
   if (status != 0) {
     std::ifstream errors(diagnostics);
     std::cerr << errors.rdbuf();
