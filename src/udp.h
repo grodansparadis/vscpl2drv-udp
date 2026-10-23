@@ -61,6 +61,7 @@ private:
   std::array<uint8_t, 128> m_destination{};
   int m_destinationSize = 0;
   std::atomic<bool> m_quit{ true };
+  bool m_workerStarted = false;
   std::thread m_worker;
   std::mutex m_stateMutex;
   std::mutex m_receiveMutex;

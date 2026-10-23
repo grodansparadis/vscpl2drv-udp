@@ -757,7 +757,13 @@ CUdp::open(const std::string &path, const cguid &)
   m_quit = false;
   try {
     if (!(m_flags & 2)) {
+      {
+        std::lock_guard<std::mutex> receiveLock(m_receiveMutex);
+        m_workerStarted = false;
+      }
       m_worker = std::thread(&CUdp::worker, this);
+      std::unique_lock<std::mutex> receiveLock(m_receiveMutex);
+      m_receiveReady.wait(receiveLock, [this] { return m_workerStarted || m_quit; });
     }
   }
   catch (const std::system_error &error) {
@@ -1067,11 +1073,20 @@ void
 CUdp::worker()
 {
   try {
+    bool started = false;
     while (!m_quit) {
       pollDescriptor descriptor{};
       descriptor.fd     = m_socket;
       descriptor.events = POLLIN;
       const int ready   = pollSocket(descriptor, 20);
+      if (!started) {
+        {
+          std::lock_guard<std::mutex> lock(m_receiveMutex);
+          m_workerStarted = true;
+        }
+        m_receiveReady.notify_all();
+        started = true;
+      }
       if (ready < 0 && wouldBlock(socketErrorCode())) {
         continue;
       }
