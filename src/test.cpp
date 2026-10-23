@@ -238,10 +238,15 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
                               " --count 2 --interval 0 --timeout infinite --class 1026 --type 65500 --data 01,02,ff --guid " + guid;
   check(run(command) == 0, "standalone peer send");
   std::cerr << "peerInterop: initial sends complete\n";
+  std::cerr << "peerInterop: parsing expected GUID\n";
   cguid expectedGuid(guid);
+  std::cerr << "peerInterop: expected GUID parsed\n";
   for (int i = 0; i < 2; ++i) {
     vscpEvent received{};
-    check(VSCPRead(server, &received, 3000) == CANAL_ERROR_SUCCESS, "driver receives peer event");
+    std::cerr << "peerInterop: waiting for driver event " << i + 1 << '\n';
+    const int result = VSCPRead(server, &received, 3000);
+    std::cerr << "peerInterop: driver read returned " << result << '\n';
+    check(result == CANAL_ERROR_SUCCESS, "driver receives peer event");
     const bool matches = received.vscp_class == 1026 && received.vscp_type == 65500 &&
                          received.sizeData == 3 && received.pdata[0] == 1 && received.pdata[1] == 2 &&
                          received.pdata[2] == 255 && received.timestamp_ns != 0 &&
