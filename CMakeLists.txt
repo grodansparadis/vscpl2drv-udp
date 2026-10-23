@@ -262,7 +262,10 @@ include_directories( PUBLIC src/
 if(WIN32)
   target_include_directories(vscpl2drv-udp PRIVATE "${vscp_SOURCE_DIR}/src/common/windows")
 endif()
-set_target_properties(vscpl2drv-udp PROPERTIES DEFINE_SYMBOL VSCPL2DRV_UDP_EXPORTS)
+set_target_properties(vscpl2drv-udp PROPERTIES
+  DEFINE_SYMBOL VSCPL2DRV_UDP_EXPORTS
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES)
   
 
 
