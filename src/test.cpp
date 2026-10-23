@@ -293,7 +293,12 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
               " --count 2 --interval 0 --data 03,04,ff") == 0,
           "standalone and driver-loading CLI pair");
   }
-  check(process.get() == 0, "standalone peer receive");
+  const int status = process.get();
+  if (status != 0) {
+    std::ifstream errors(diagnostics);
+    std::cerr << errors.rdbuf();
+  }
+  check(status == 0, "standalone peer receive (exit status " + std::to_string(status) + ")");
   std::ifstream input(output);
   std::string line;
   for (int i = 0; i < 2; ++i) {
