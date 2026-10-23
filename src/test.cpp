@@ -256,6 +256,8 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
   reservation.fd = invalidSocket;
   config["interface"] = "udp://127.0.0.1:" + std::to_string(port);
   config["flags"] = 1;
+  config["logging"]["console-enable"] = true;
+  config["logging"]["console-level"] = "warning";
   const auto receiveConfig = files.put("peer-receive.json", config.dump());
   const auto output = files.put("peer-output.json", "");
   const auto diagnostics = files.put("peer-stderr.txt", "");
@@ -272,6 +274,14 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
     if (ready || process.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready)
       break;
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (!ready && process.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+    const int status = process.get();
+    std::cerr << "peerInterop: receiver exited before ready with " << status << '\n';
+    std::ifstream outputErrors(output);
+    std::cerr << outputErrors.rdbuf();
+    std::ifstream errors(diagnostics);
+    std::cerr << errors.rdbuf();
   }
   check(ready, "standalone peer receiver ready");
 
@@ -305,6 +315,8 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
   const int status = process.get();
   std::cerr << "peerInterop: receiver exited with " << status << '\n';
   if (status != 0) {
+    std::ifstream outputErrors(output);
+    std::cerr << outputErrors.rdbuf();
     std::ifstream errors(diagnostics);
     std::cerr << errors.rdbuf();
   }
