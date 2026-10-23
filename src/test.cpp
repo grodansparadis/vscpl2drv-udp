@@ -530,11 +530,7 @@ configurationTests(Files &files)
     const nlohmann::json config{ { "flags", 3 },
                                  { "logging", { { "syslog-enable-log", true }, { "syslog-log-level", "loud" } } } };
     Handle driver{ VSCPOpen(files.put("syslog-level.json", config.dump()).c_str(), guid) };
-#ifdef _WIN32
-    check(driver.value, "unsupported syslog settings must be ignored on Windows");
-#else
     check(!driver.value, "invalid syslog level accepted");
-#endif
   }
   for (const auto &security : std::vector<nlohmann::json>{
          nullptr, false, 1, "none", nlohmann::json::array(),
