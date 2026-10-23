@@ -590,6 +590,29 @@ normal VSCP events; the driver handles serialization, CRC, encryption, padding,
 IV generation and optional HMAC automatically. Do not pass pre-encrypted frames
 as event data.
 
+#### Unencrypted events
+
+Save this complete configuration as `send-plain.json`:
+
+```json
+{
+  "interface": "udp://127.0.0.1:33333",
+  "flags": 2,
+  "security": {
+    "encryption": "none",
+    "key": "",
+    "hmac": ""
+  },
+  "logging": { "console-enable": false }
+}
+```
+
+Select its absolute path in the daemon's `path-config` and restart/reopen the
+driver. Send events exactly as in the encrypted case. No key files are needed.
+The CRC remains present, but the payload is readable on the network and is not
+cryptographically authenticated. **A nonempty `hmac` with `encryption: "none"`
+is invalid and prevents startup.**
+
 #### AES encryption with HMAC authentication
 
 For authenticated AES-256, generate two independent key files. On Linux/macOS:
@@ -639,28 +662,7 @@ The **separate HMAC key is always 32 bytes**. AES without HMAC is supported by
 omitting `security.hmac` or setting it to an empty string, but provides confidentiality
 only, not cryptographic authentication.
 
-#### Unencrypted events
 
-Save this complete configuration as `send-plain.json`:
-
-```json
-{
-  "interface": "udp://127.0.0.1:33333",
-  "flags": 2,
-  "security": {
-    "encryption": "none",
-    "key": "",
-    "hmac": ""
-  },
-  "logging": { "console-enable": false }
-}
-```
-
-Select its absolute path in the daemon's `path-config` and restart/reopen the
-driver. Send events exactly as in the encrypted case. No key files are needed.
-The CRC remains present, but the payload is readable on the network and is not
-cryptographically authenticated. **A nonempty `hmac` with `encryption: "none"`
-is invalid and prevents startup.**
 
 #### Verify either mode without a daemon
 
@@ -671,6 +673,10 @@ Start the standalone receiver in terminal 1:
 ```bash
 ./build/vscp-udp-peer receive --config receive-auth.json --count 1 --timeout 60000
 ```
+
+To keep waiting without a deadline, replace `--timeout 60000` with
+`--timeout infinite`. This still exits after receiving one event; press Ctrl+C
+to stop before an event arrives.
 
 Wait for `UDP peer ready (receive)`, then send through the actual driver in
 terminal 2:
@@ -741,7 +747,7 @@ local shared library, **not** a network address or configuration file.
 | `--config FILE` | Both commands/modes | Required; driver-format JSON configuration. |
 | `--driver LIBRARY` | Both commands | Optional path to a `.so`, `.dylib` or `.dll`; omission selects standalone UDP. |
 | `--count N` | Both commands/modes | 1; range 1-1000000. |
-| `--timeout MS` | Both commands/modes | 5000; range 0-3600000 milliseconds per operation. |
+| `--timeout MS` | Both commands/modes | 5000; range 0-3600000 milliseconds per operation, or `infinite` to wait without a deadline. |
 | `--interval MS` | Send only | 1000; range 0-3600000 milliseconds between events. |
 | `--class N` | Send only | 10; range 0-65535. |
 | `--type N` | Send only | 6; range 0-65535. |
@@ -755,6 +761,25 @@ finite: the process exits after the requested operations or the first error.
 CLI diagnostics (including the loaded driver's version) go to stderr;
 received events go to stdout as JSON lines. The driver's configured logging
 sinks remain active, so disable console logging for clean JSON output.
+
+Use `--timeout infinite` to wait indefinitely for each event, in either mode:
+
+```bash
+./build/vscp-udp-peer receive --config receive.json --count 5 --timeout infinite
+```
+
+The same option works when receiving through the driver library:
+
+```bash
+./build/vscp-udp-peer receive --driver ./build/libvscpl2drv-udp.so \
+  --config receive.json --count 5 --timeout infinite
+```
+
+This retries timed-out operations but still exits on other errors and after
+`--count` events. Stop the process with Ctrl+C if no events arrive.
+Numeric `--timeout 0` still means an immediate attempt, not an infinite wait.
+
+You can of course also use [vscp-works](https://github.com/grodansparadis/vscp-works-qt) for this.
 
 #### 1. Build or install the application
 
@@ -918,7 +943,8 @@ daemon routes them to this driver.
 The peer prints one JSON object per received event, containing `head`, `class`,
 `type`, `guid`, `timestamp_ns` and decimal-byte `data`. Disable console logging
 in the peer configuration to keep stdout as JSON only. Application diagnostics
-go to stderr. The timeout is in milliseconds **per event**; timeout, disabled
+go to stderr. The timeout is in milliseconds **per event**, or `infinite` for
+no deadline; with a numeric timeout, expiration produces a nonzero exit code. Disabled
 direction, invalid arguments or configuration errors produce a nonzero exit code.
 A successful send means the datagram was submitted, not acknowledged by the
 remote driver. Configured input/output filters still apply.
@@ -964,7 +990,7 @@ modes, and checks loader failures and receive timeouts.
 | Configuration cannot be opened | Run from the directory containing the JSON files, or pass an absolute path. The daemon also needs permission to read its config and keys. |
 | Driver cannot be loaded / missing export | Pass the full path to the driver library, not the CLI. Check its architecture, dependencies and Level II API exports. |
 | Bind failure / address already in use | Only one receiver may bind port 33333 on the same address. Stop the other receiver or use a different port at both endpoints. |
-| Receive timeout | Start the receiver first, check the sender's destination address/port and firewall, and verify the host routes events to/from the driver. Increase `--timeout` if needed. |
+| Receive timeout | Start the receiver first, check the sender's destination address/port and firewall, and verify the host routes events to/from the driver. Increase `--timeout` or use `--timeout infinite` to wait without a deadline. |
 | Disabled-direction error | Use `flags: 2` for sending and `flags: 1` for receiving. |
 | Invalid frame / authentication / CRC warnings | Match encryption modes and key contents on both endpoints; either both must configure HMAC or neither must. |
 | Missing events | Check driver input/output filters. UDP delivery is not guaranteed. A successful send is not a delivery acknowledgement. |

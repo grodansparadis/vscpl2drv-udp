@@ -1,0 +1,10 @@
+{
+  "interface": "udp://127.0.0.1:33333",
+  "flags": 2,
+  "security": {
+    "encryption": "none",
+    "key": "",
+    "hmac": ""
+  },
+  "logging": { "console-enable": false }
+}
