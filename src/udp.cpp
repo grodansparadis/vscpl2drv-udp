@@ -1073,20 +1073,16 @@ void
 CUdp::worker()
 {
   try {
-    bool started = false;
+    {
+      std::lock_guard<std::mutex> lock(m_receiveMutex);
+      m_workerStarted = true;
+    }
+    m_receiveReady.notify_all();
     while (!m_quit) {
       pollDescriptor descriptor{};
       descriptor.fd     = m_socket;
       descriptor.events = POLLIN;
       const int ready   = pollSocket(descriptor, 20);
-      if (!started) {
-        {
-          std::lock_guard<std::mutex> lock(m_receiveMutex);
-          m_workerStarted = true;
-        }
-        m_receiveReady.notify_all();
-        started = true;
-      }
       if (ready < 0 && wouldBlock(socketErrorCode())) {
         continue;
       }
