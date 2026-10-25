@@ -584,6 +584,7 @@ CUdp::loadConfig(const std::string &path)
     // Syslog. Not available on Windows, where the option is ignored.
     bool syslogIgnored = false;
     if (logging.value("syslog-enable-log", false)) {
+      const auto level = logLevel(logging.value("syslog-log-level", std::string("info")));
 #ifdef _WIN32
       syslogIgnored = true;
 #else
@@ -592,7 +593,7 @@ CUdp::loadConfig(const std::string &path)
                                                         LOG_PID,
                                                         LOG_USER,
                                                         false);
-      sink->set_level(logLevel(logging.value("syslog-log-level", std::string("info"))));
+      sink->set_level(level);
       sinks.push_back(sink);
 #endif
     }

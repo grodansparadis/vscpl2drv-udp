@@ -14,9 +14,13 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <cerrno>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <spawn.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -33,6 +37,10 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+extern char **environ;
+#endif
 
 namespace {
 const char *guid = "FF:FF:FF:FF:FF:FF:FF:F5:02:00:00:00:00:00:00:03";
@@ -86,6 +94,9 @@ struct Socket {
   Socket()
   {
     check(fd != invalidSocket, "socket");
+#ifndef _WIN32
+    check(fcntl(fd, F_SETFD, FD_CLOEXEC) == 0, "FD_CLOEXEC");
+#endif
     address.sin_family      = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     check(bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0, "bind");
@@ -209,6 +220,7 @@ void
 peerInterop(Files &files, const std::string &executable, nlohmann::json config, long server,
             const std::string &driver, bool loadReceiver = true)
 {
+  std::cerr << "peerInterop: start (driver=" << !driver.empty() << ", loadReceiver=" << loadReceiver << ")\n";
   auto quote = [](const std::string &text) {
 #ifdef _WIN32
     check(text.find_first_of("\"%!\r\n") == std::string::npos,
@@ -226,7 +238,18 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
     // cmd.exe needs an outer pair of quotes around a quoted executable path.
     return std::system(("\"" + command + "\"").c_str());
 #else
-    return std::system(command.c_str());
+    pid_t child = 0;
+    char *arguments[] = {
+      const_cast<char *>("sh"), const_cast<char *>("-c"), const_cast<char *>(command.c_str()), nullptr
+    };
+    if (posix_spawn(&child, "/bin/sh", nullptr, nullptr, arguments, environ) != 0)
+      return 1;
+    int status = 0;
+    pid_t result;
+    do {
+      result = waitpid(child, &status, 0);
+    } while (result < 0 && errno == EINTR);
+    return result == child && WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 #endif
   };
   config["flags"] = 2;
@@ -236,10 +259,16 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
                               driverOption +
                               " --count 2 --interval 0 --timeout infinite --class 1026 --type 65500 --data 01,02,ff --guid " + guid;
   check(run(command) == 0, "standalone peer send");
+  std::cerr << "peerInterop: initial sends complete\n";
+  std::cerr << "peerInterop: parsing expected GUID\n";
   cguid expectedGuid(guid);
+  std::cerr << "peerInterop: expected GUID parsed\n";
   for (int i = 0; i < 2; ++i) {
     vscpEvent received{};
-    check(VSCPRead(server, &received, 3000) == CANAL_ERROR_SUCCESS, "driver receives peer event");
+    std::cerr << "peerInterop: waiting for driver event " << i + 1 << '\n';
+    const int result = VSCPRead(server, &received, 3000);
+    std::cerr << "peerInterop: driver read returned " << result << '\n';
+    check(result == CANAL_ERROR_SUCCESS, "driver receives peer event");
     const bool matches = received.vscp_class == 1026 && received.vscp_type == 65500 &&
                          received.sizeData == 3 && received.pdata[0] == 1 && received.pdata[1] == 2 &&
                          received.pdata[2] == 255 && received.timestamp_ns != 0 &&
@@ -254,6 +283,8 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
   reservation.fd = invalidSocket;
   config["interface"] = "udp://127.0.0.1:" + std::to_string(port);
   config["flags"] = 1;
+  config["logging"]["console-enable"] = true;
+  config["logging"]["console-level"] = "warning";
   const auto receiveConfig = files.put("peer-receive.json", config.dump());
   const auto output = files.put("peer-output.json", "");
   const auto diagnostics = files.put("peer-stderr.txt", "");
@@ -271,11 +302,21 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
       break;
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+  if (!ready && process.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+    const int status = process.get();
+    std::cerr << "peerInterop: receiver exited before ready with " << status << '\n';
+    std::ifstream outputErrors(output);
+    std::cerr << outputErrors.rdbuf();
+    std::ifstream errors(diagnostics);
+    std::cerr << errors.rdbuf();
+  }
   check(ready, "standalone peer receiver ready");
+
   if (config.at("security").value("encryption", std::string("none")) == "none") {
     check(process.wait_for(std::chrono::milliseconds(1200)) == std::future_status::timeout,
           "infinite timeout keeps receiver waiting across read timeouts");
   }
+
   config["flags"] = 2;
   uint8_t data[] = { 3, 4, 255 };
   vscpEvent event{};
@@ -297,7 +338,16 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
               " --count 2 --interval 0 --data 03,04,ff") == 0,
           "standalone and driver-loading CLI pair");
   }
-  check(process.get() == 0, "standalone peer receive");
+  std::cerr << "peerInterop: sender complete, waiting for receiver\n";
+  const int status = process.get();
+  std::cerr << "peerInterop: receiver exited with " << status << '\n';
+  if (status != 0) {
+    std::ifstream outputErrors(output);
+    std::cerr << outputErrors.rdbuf();
+    std::ifstream errors(diagnostics);
+    std::cerr << errors.rdbuf();
+  }
+  check(status == 0, "standalone peer receive (exit status " + std::to_string(status) + ")");
   std::ifstream input(output);
   std::string line;
   for (int i = 0; i < 2; ++i) {
@@ -495,14 +545,19 @@ configurationTests(Files &files)
                                     { { "logging", { { "udp-enable-log", true }, { "udp-port", 0 } } } },
                                     { { "logging", { { "udp-enable-log", true }, { "udp-port", 65536 } } } },
                                     { { "logging", { { "udp-enable-log", true }, { "udp-port", "9999" } } } },
-                                    { { "logging", { { "udp-enable-log", true }, { "udp-log-level", "loud" } } } },
-                                    { { "logging", { { "syslog-enable-log", true }, { "syslog-log-level", "loud" } } } } }) {
+                                    { { "logging", { { "udp-enable-log", true }, { "udp-log-level", "loud" } } } } }) {
     check(VSCPOpen(files.put("invalid.json", config.dump()).c_str(), guid) == 0, "invalid config accepted");
     if (config.contains("encryption")) {
       const nlohmann::json nested{ { "security", config } };
       check(VSCPOpen(files.put("invalid-security.json", nested.dump()).c_str(), guid) == 0,
             "invalid nested security accepted");
     }
+  }
+  {
+    const nlohmann::json config{ { "flags", 3 },
+                                 { "logging", { { "syslog-enable-log", true }, { "syslog-log-level", "loud" } } } };
+    Handle driver{ VSCPOpen(files.put("syslog-level.json", config.dump()).c_str(), guid) };
+    check(!driver.value, "invalid syslog level accepted");
   }
   for (const auto &security : std::vector<nlohmann::json>{
          nullptr, false, 1, "none", nlohmann::json::array(),
@@ -550,6 +605,12 @@ configurationTests(Files &files)
                                          { "udp-port", collector.port() } } } };
     Handle logged{ VSCPOpen(files.put("udp-log.json", logConfig.dump()).c_str(), guid) };
     check(logged.value, "UDP log open");
+#ifdef _WIN32
+    const auto warning = collector.receive();
+    check(std::string(warning.begin(), warning.end())
+              .rfind("udp-log: syslog logging is not supported on Windows; syslog-enable-log ignored", 0) == 0,
+          "missing unsupported syslog warning");
+#endif
     const auto packet = collector.receive();
     const std::string line(packet.begin(), packet.end());
     check(line.rfind("udp-log: UDP driver opened", 0) == 0, "UDP log message: " + line);

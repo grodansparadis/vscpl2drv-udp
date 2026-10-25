@@ -235,6 +235,7 @@ public:
     if (!address) {
       throw std::runtime_error(std::string("Missing driver export ") + name + ": " +
                                std::system_category().message(GetLastError()));
+    }
 #else
     dlerror();
     auto address      = dlsym(m_library, name);
