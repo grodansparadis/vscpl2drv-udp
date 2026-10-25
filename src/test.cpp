@@ -14,10 +14,13 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <cerrno>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <spawn.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -34,6 +37,10 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+extern char **environ;
+#endif
 
 namespace {
 const char *guid = "FF:FF:FF:FF:FF:FF:FF:F5:02:00:00:00:00:00:00:03";
@@ -231,7 +238,18 @@ peerInterop(Files &files, const std::string &executable, nlohmann::json config, 
     // cmd.exe needs an outer pair of quotes around a quoted executable path.
     return std::system(("\"" + command + "\"").c_str());
 #else
-    return std::system(command.c_str());
+    pid_t child = 0;
+    char *arguments[] = {
+      const_cast<char *>("sh"), const_cast<char *>("-c"), const_cast<char *>(command.c_str()), nullptr
+    };
+    if (posix_spawn(&child, "/bin/sh", nullptr, nullptr, arguments, environ) != 0)
+      return 1;
+    int status = 0;
+    pid_t result;
+    do {
+      result = waitpid(child, &status, 0);
+    } while (result < 0 && errno == EINTR);
+    return result == child && WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 #endif
   };
   config["flags"] = 2;
