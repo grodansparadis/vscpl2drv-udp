@@ -30,8 +30,8 @@
 
 #define MAJOR_VERSION       2026
 #define MINOR_VERSION       10
-#define PATCH_VERSION       7
+#define PATCH_VERSION       8
 
-#define DISPLAY_VERSION "2026.10.7"
+#define DISPLAY_VERSION "2026.10.8"
 #define COPYRIGHT       "Copyright (c) 2000-2026 Ake Hedman and contributors, the VSCP Project"
 #define COPYRIGHT_HTML  "Copyright (c) 2000-2026 Ake Hedman and contributors, the VSCP Project"
