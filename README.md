@@ -4,7 +4,13 @@
 ![Linux Build](https://github.com/grodansparadis/vscpl2drv-udp/actions/workflows/build.yml/badge.svg) 
 [![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 
-VSCP UDP level II driver
+Available for
+
+  * Linux including Raspberry Pi (32-bit and 64 bit)
+  * Windows
+  * MacOS (x86_64 and arm64)
+
+## VSCP level II UDP driver
 
 - **Available for:** Linux (Debian,Raspberry Pi 64-bit (ARM64) and 32-bit (ARMHF))
 - **Driver Linux**: libvscpl2drv-udp.so
