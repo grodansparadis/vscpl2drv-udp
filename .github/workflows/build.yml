@@ -111,12 +111,23 @@ jobs:
               cpack -G "DEB;TGZ"
             '
 
+      - name: Write SHA256SUMS
+        id: sha256sums_114
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash .github/scripts/write-sha256sums.sh "SHA256SUMS-vscpl2drv-udp-linux-${{ matrix.deb_arch }}" <<'SHA256SUMS_PATTERNS'
+          build/*.deb
+          build/*.tar.gz
+          SHA256SUMS_PATTERNS
+
       - uses: actions/upload-artifact@v4
         with:
           name: vscpl2drv-udp-linux-${{ matrix.deb_arch }}
           path: |
             build/*.deb
             build/*.tar.gz
+            ${{ steps.sha256sums_114.outputs.file }}
           if-no-files-found: error
           retention-days: 3
 
@@ -163,10 +174,21 @@ jobs:
           cd build
           cpack -G TGZ
 
+      - name: Write SHA256SUMS
+        id: sha256sums_166
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash .github/scripts/write-sha256sums.sh "SHA256SUMS-vscpl2drv-udp-macos-${{ matrix.arch }}" <<'SHA256SUMS_PATTERNS'
+          build/*.tar.gz
+          SHA256SUMS_PATTERNS
+
       - uses: actions/upload-artifact@v4
         with:
           name: vscpl2drv-udp-macos-${{ matrix.arch }}
-          path: build/*.tar.gz
+          path: |
+            build/*.tar.gz
+            ${{ steps.sha256sums_166.outputs.file }}
           if-no-files-found: error
           retention-days: 3
 
@@ -226,9 +248,20 @@ jobs:
           Get-ChildItem -Recurse $stage | Select-Object FullName, Length
           Compress-Archive -Path "$stage/*" -DestinationPath "build/$stage.zip"
 
+      - name: Write SHA256SUMS
+        id: sha256sums_229
+        continue-on-error: true
+        shell: bash
+        run: |
+          bash .github/scripts/write-sha256sums.sh "SHA256SUMS-vscpl2drv-udp-windows-${{ matrix.arch }}" <<'SHA256SUMS_PATTERNS'
+          build/*.zip
+          SHA256SUMS_PATTERNS
+
       - uses: actions/upload-artifact@v4
         with:
           name: vscpl2drv-udp-windows-${{ matrix.arch }}
-          path: build/*.zip
+          path: |
+            build/*.zip
+            ${{ steps.sha256sums_229.outputs.file }}
           if-no-files-found: error
           retention-days: 3
