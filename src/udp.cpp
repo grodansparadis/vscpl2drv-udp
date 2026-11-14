@@ -707,6 +707,12 @@ CUdp::setupSocket()
       // (vscpsim, VSCP clients) that also set SO_REUSEADDR.
       ok = ok && (!m_reuseAddress ||
            setsockopt(m_socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&enabled), sizeof(enabled)) == 0);
+#if defined(SO_REUSEPORT) && !defined(__linux__) && !defined(_WIN32)
+      // macOS/BSD only let two UDP sockets bind the same address and port
+      // when SO_REUSEPORT is set as well
+      ok = ok && (!m_reuseAddress ||
+           setsockopt(m_socket, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char *>(&enabled), sizeof(enabled)) == 0);
+#endif
       if (address->ai_family == AF_INET) {
         sockaddr_in local{};
         local.sin_family = AF_INET;
