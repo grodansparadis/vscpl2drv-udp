@@ -23,6 +23,12 @@ The installed sample is /usr/share/vscpl2drv-udp/udp.json.
   the resolved family on the same port. Client-only sockets use an ephemeral
   source port. Multicast group membership is not implemented.
 
+**reuse-address**
+: Optional, default false. When true the socket is opened with SO_REUSEADDR
+  (and SO_REUSEPORT on macOS/BSD), so it can share its port with other
+  programs on the same host that do the same, for example vscpsim.
+  Broadcast datagrams then reach every socket, unicast datagrams only one.
+
 **flags**
 : 0 enables sending and receiving, 1 receives only, 2 sends only,
   and 3 disables both.
@@ -52,8 +58,22 @@ The installed sample is /usr/share/vscpl2drv-udp/udp.json.
   strings. Defaults accept all events.
 
 **logging**
-: Console, rotating-file, syslog (not on Windows) and UDP logging are
-  supported. See the sample for options.
+:   Logging of the driver. All keys are optional.
+
+    **console-enable**, **console-level**, **console-pattern**
+    :   Log to standard error: on/off, level (**trace**, **debug**,
+        **info**, **warn**, **error**, **critical**, **off**) and spdlog
+        pattern.
+
+    **file-enable**, **file-log-level**, **file-log-path**, **file-log-pattern**, **file-log-max-size**, **file-log-max-files**
+    :   Log to a rotating file: on/off, level, path, pattern, size of a
+        file in bytes and number of files kept.
+
+    **syslog-enable-log**, **syslog-log-level**, **syslog-ident**
+    :   Log to syslog (not on Windows).
+
+    **udp-enable-log**, **udp-log-level**, **udp-pattern**, **udp-host**, **udp-port**
+    :   Send log lines as UDP datagrams to a log collector.
 
 **write**
 : Reserved. Runtime configuration changes are not currently implemented.
@@ -62,6 +82,54 @@ Invalid configuration, missing/invalid required keys or bind failures prevent
 the driver from opening. Keep configuration and key files private to the
 driver user. Encryption without HMAC provides confidentiality only.
 UDP has no delivery, ordering or replay guarantees.
+
+# FILES
+
+*/usr/share/vscpl2drv-udp/udp.json*
+:   Sample configuration file.
+
+*/var/lib/vscp/drivers/level2/libvscpl2drv-udp.so*
+:   The driver.
+
+# EXAMPLE
+
+A configuration file (the installed sample):
+
+    {
+      "write": false,
+      "interface": "udp://255.255.255.255:33333",
+      "flags": 0,
+      "security": {
+        "key": "",
+        "hmac": "",
+        "encryption": "none"
+      },
+      "logging": {
+        "console-enable": true,
+        "console-level": "info",
+        "console-pattern": "[vscpl2drv-udp] [%^%l%$] %v",
+        "file-enable": false,
+        "file-log-level": "info",
+        "file-log-path": "/var/log/vscp/vscpl2drv-udp.log",
+        "file-log-pattern": "[vscpl2drv-udp] [%l] %v",
+        "file-log-max-size": 5242880,
+        "file-log-max-files": 7,
+        "syslog-enable-log": false,
+        "syslog-log-level": "info",
+        "syslog-ident": "vscpl2drv-udp",
+        "udp-enable-log": false,
+        "udp-log-level": "info",
+        "udp-pattern": "[vscpl2drv-udp] [%l] %v",
+        "udp-host": "127.0.0.1",
+        "udp-port": 9999
+      },
+      "filter": {
+        "in-filter": "0,0,0,-",
+        "in-mask": "0,0,0,-",
+        "out-filter": "0,0,0,-",
+        "out-mask": "0,0,0,-"
+      }
+    }
 
 # TESTING
 

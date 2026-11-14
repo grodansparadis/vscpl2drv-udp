@@ -7,6 +7,7 @@ tagged, rename **Unreleased** to the version and date, and start a new
 
 ## Unreleased
 
+- Man pages: vscpl2drv-udp(1) now lists every configuration setting and has an example; new vscp-udp-peer(1). The man pages are built with pandoc in CMake; the old scripts, generated pages and the copied vscpl2drv-socketcan page are removed
 - Add the optional `reuse-address` setting so the server socket can share its port with vscpsim and other VSCP programs on the same host
 - Fix the CI checksum step: readable SHA256SUMS files, bash 3.2 on macOS, and jobs that run in a subfolder
 - Add scripts/download-artifacts.sh to download and verify the newest CI build artifacts
