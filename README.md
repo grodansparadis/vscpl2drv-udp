@@ -334,7 +334,15 @@ The client sends to this address and port. The server listens on the wildcard
 address of the resolved family at the same port. Client-only sockets
 use an ephemeral source port. IPv4 broadcast is enabled; multicast group
 membership is not implemented. No CAN interface or remote variable is used.
-Only one server can bind a given local address/port.
+Only one server can bind a given local address/port, unless
+`reuse-address` is set.
+
+### reuse-address
+Optional, default `false`. When `true` the server socket is opened with
+`SO_REUSEADDR`, so it can share its port with other programs on the same
+host that do the same, for example `vscpsim` or the VSCP UDP clients used by
+VSCP Works. Broadcast datagrams then reach every socket. Unicast datagrams
+reach only one of them, so leave it off unless you need it.
 
 ### Flags
 This is configuration flags for the UDP interface.

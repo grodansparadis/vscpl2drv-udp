@@ -464,6 +464,12 @@ CUdp::loadConfig(const std::string &path)
     }
     m_flags = static_cast<uint32_t>(flags);
 
+    // Let the server socket share its port with other sockets on this host
+    if (config.contains("reuse-address") && !config.at("reuse-address").is_boolean()) {
+      throw std::runtime_error("reuse-address must be a boolean");
+    }
+    m_reuseAddress = config.value("reuse-address", false);
+
     // Writable flag (reserved for future use)
     config.value("write", false); // Reserved for future runtime configuration support.
 
@@ -697,6 +703,10 @@ CUdp::setupSocket()
       (address->ai_family != AF_INET ||
        setsockopt(m_socket, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char *>(&enabled), sizeof(enabled)) == 0);
     if (!(m_flags & 2)) {
+      // Optionally share the port with other VSCP nodes on the same host
+      // (vscpsim, VSCP clients) that also set SO_REUSEADDR.
+      ok = ok && (!m_reuseAddress ||
+           setsockopt(m_socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&enabled), sizeof(enabled)) == 0);
       if (address->ai_family == AF_INET) {
         sockaddr_in local{};
         local.sin_family = AF_INET;

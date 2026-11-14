@@ -394,6 +394,22 @@ roundTrip(Files &files, const std::string &mode, int encryption, bool authentica
   Handle server{ VSCPOpen(files.put("server.json", config.dump()).c_str(), guid) };
   check(server.value, "server open");
   check(VSCPOpen(files.put("collision.json", config.dump()).c_str(), guid) == 0, "bind collision must fail");
+  {
+    // With reuse-address on both sockets the port can be shared
+    Socket shared;
+    const unsigned sharedPort = shared.port();
+    closeSocket(shared.fd);
+    shared.fd = invalidSocket;
+    auto reuse                 = config;
+    reuse["interface"]         = "udp://127.0.0.1:" + std::to_string(sharedPort);
+    reuse["reuse-address"]     = true;
+    Handle first{ VSCPOpen(files.put("reuse1.json", reuse.dump()).c_str(), guid) };
+    check(first.value, "reuse-address first open");
+    Handle second{ VSCPOpen(files.put("reuse2.json", reuse.dump()).c_str(), guid) };
+    check(second.value, "reuse-address second open");
+    reuse["reuse-address"] = "yes";
+    check(VSCPOpen(files.put("reuse3.json", reuse.dump()).c_str(), guid) == 0, "reuse-address must be boolean");
+  }
   if (!peer.empty())
     peerInterop(files, peer, config, server.value, "");
   if (!peer.empty() && !driver.empty())

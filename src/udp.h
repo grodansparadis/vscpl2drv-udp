@@ -50,6 +50,7 @@ private:
 
   std::string m_interface = "udp://255.255.255.255:33333";
   uint32_t m_flags        = 0;
+  bool m_reuseAddress     = false;
   uint8_t m_encryption    = VSCP_ENCRYPTION_NONE;
   bool m_authenticated    = false;
   SecureKey m_key;
