@@ -7,6 +7,7 @@ tagged, rename **Unreleased** to the version and date, and start a new
 
 ## Unreleased
 
+- Build the VSCP helper logging sources (vscphelperlogging.cpp and the forwarder), which vscphelper.cpp needs since the latest vscp
 - The vscp submodule (vscp) points to the latest vscp master (d75d4f5c6)
 - Build against the latest vscp master (d75d4f5c6)
 - Man pages: vscpl2drv-udp(1) now lists every configuration setting and has an example; new vscp-udp-peer(1). The man pages are built with pandoc in CMake; the old scripts, generated pages and the copied vscpl2drv-socketcan page are removed
