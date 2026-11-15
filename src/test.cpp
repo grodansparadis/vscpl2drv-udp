@@ -1,5 +1,11 @@
 // Copyright (c) 2000-2026 Ake Hedman and contributors, the VSCP Project
 // SPDX-License-Identifier: LGPL-2.0-or-later
+// Windows headers before the VSCP headers (vscphelper.h uses HANDLE)
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#endif
 #include "vscpl2drv-udp.h"
 #include <canal.h>
 #include <crc.h>
