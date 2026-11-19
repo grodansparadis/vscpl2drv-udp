@@ -18,7 +18,7 @@ jobs:
       sha: ${{ steps.bump.outputs.sha || github.sha }}
       version: ${{ steps.bump.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.actor != 'github-actions[bot]'
         with:
           ref: master
@@ -68,13 +68,13 @@ jobs:
             deb_arch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
 
       - name: Enable cross-architecture emulation
         if: matrix.qemu
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           platforms: arm
 
@@ -121,7 +121,7 @@ jobs:
           build/*.tar.gz
           SHA256SUMS_PATTERNS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vscpl2drv-udp-linux-${{ matrix.deb_arch }}
           path: |
@@ -145,7 +145,7 @@ jobs:
             runner: macos-15-intel
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
 
@@ -183,7 +183,7 @@ jobs:
           build/*.tar.gz
           SHA256SUMS_PATTERNS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vscpl2drv-udp-macos-${{ matrix.arch }}
           path: |
@@ -207,7 +207,7 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
 
@@ -217,7 +217,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           "VCPKG_COMMIT=$(git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD)" >> $env:GITHUB_ENV
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
@@ -257,7 +257,7 @@ jobs:
           build/*.zip
           SHA256SUMS_PATTERNS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vscpl2drv-udp-windows-${{ matrix.arch }}
           path: |
